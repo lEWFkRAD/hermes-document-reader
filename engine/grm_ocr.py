@@ -23,7 +23,7 @@ from chandra.model.util import detect_repeat_token, scale_to_fit
 from chandra.output import parse_html, parse_markdown
 from chandra.prompts import PROMPT_MAPPING
 
-API_BASE = "http://forge-linux-canary.tail3bf242.ts.net:8012/v1"
+API_BASE = "http://your-vllm-host:8000/v1"
 API_KEY = "local"
 MODEL = "grm-2.6-plus-0628"
 MAX_TOKENS = 8192

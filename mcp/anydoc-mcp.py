@@ -6,9 +6,9 @@ Exposes:
   - convert_document(file_path) -> str  : Convert PDF/Word/Excel/etc. to Markdown
   - convert_with_ocr(file_path) -> str  : OCR scanned PDFs first, then convert
 
-Runs on SHATNER (CPU-only) under the Hermes venv python
-(C:\\Users\\Administrator\\AppData\\Local\\hermes\\hermes-agent\\venv), which has
-the `mcp` SDK and an editable install of chandra (C:\\Users\\Administrator\\Desktop\\chandra).
+Runs on the gateway box (CPU-only) under the Hermes venv python
+(<hermes-home>/hermes-agent/venv), which has
+the `mcp` SDK and an editable install of chandra (<path-to-chandra-clone>).
 The anydoc Rust extension (firecrawl-anydoc) lives in Python 3.14's site-packages
 and is abi3, so it is imported via the sys.path insert below.
 
@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 # anydoc (Rust extension, abi3) is installed under Python 3.14's site-packages
-_ANYDOC_SITE = Path("C:/Users/Administrator/AppData/Local/Programs/Python/Python314/Lib/site-packages")
+_ANYDOC_SITE = Path("C:/path/to/python/Lib/site-packages")
 if _ANYDOC_SITE.exists() and str(_ANYDOC_SITE) not in sys.path:
     sys.path.insert(0, str(_ANYDOC_SITE))
 

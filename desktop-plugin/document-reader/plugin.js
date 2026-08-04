@@ -1,7 +1,7 @@
 /**
  * Bearden Document Reader — Hermes desktop plugin.
  *
- * Native page over the firm OCR service (ocr_service.py on SHATNER:8899):
+ * Native page over the firm OCR service (ocr_service.py on your gateway box :8899):
  * live side-by-side view of the page being scanned and what GRM reads,
  * upload, queue, and finished-file downloads. Same backend as the staff
  * web page; this is the in-app skin.
@@ -21,7 +21,7 @@ import * as React from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const ID = 'document-reader'
-const CANDIDATES = ['http://localhost:8899', 'http://shatner:8899']
+const CANDIDATES = ['http://localhost:8899', 'http://your-ocr-host:8899']
 let SERVICE = null
 
 async function service() {
@@ -133,7 +133,7 @@ function Reader() {
   if (q.isError) {
     return jsxs('div', { style: { ...S.root, ...S.empty }, children: [
       jsx('div', { style: { color: 'var(--ui-text-secondary)', fontWeight: 600 }, children: 'Document Reader service unreachable' }),
-      jsx('div', { style: { color: 'var(--ui-text-quaternary)', fontSize: 12 }, children: 'Expected at shatner:8899 — is the service running?' }),
+      jsx('div', { style: { color: 'var(--ui-text-quaternary)', fontSize: 12 }, children: 'Expected at your-ocr-host:8899 — is the service running?' }),
     ] })
   }
   if (!st) return jsx('div', { style: { ...S.root, ...S.empty }, children: jsx('div', { style: S.quiet, children: '…' }) })
@@ -203,7 +203,7 @@ function Reader() {
     : jsxs('div', { style: { ...S.empty, height: '100%' }, children: [
         jsx('div', { style: { color: 'var(--ui-text-secondary)', fontWeight: 600 }, children: 'Drop-free zone — use "Scan a document"' }),
         jsx('div', { style: { color: 'var(--ui-text-quaternary)', fontSize: 12, textAlign: 'center', lineHeight: 1.7 },
-          children: 'or save a scanned PDF into \\\\SHATNER\\M\\OCR-Inbox. Finished Excel and text files land in OCR-Inbox\\Processed.' }),
+          children: 'or save a scanned PDF into \\\\YOUR-SERVER\\M\\OCR-Inbox. Finished Excel and text files land in OCR-Inbox\\Processed.' }),
       ] })
 
   const copyPath = (p, what) => {
@@ -280,7 +280,7 @@ function Reader() {
 export default {
   id: ID,
   name: 'Document Reader',
-  defaultEnabled: false, // inventories in Settings → Plugins; Jeff flips it on
+  defaultEnabled: false, // inventories in Settings → Plugins; enable in Settings → Plugins
   register(ctx) {
     ctx.i18n.register({
       en: {

@@ -3,9 +3,9 @@
 Bearden Firm OCR Service — watched-folder OCR with a live web UI.
 
 Staff usage (no install):
-  1. Drop a scanned PDF into \\\\SHATNER\\M\\OCR-Inbox  (D:\\OCR-Inbox locally),
+  1. Drop a scanned PDF into \\\\YOUR-SERVER\\M\\OCR-Inbox  (D:\\OCR-Inbox locally),
      or drag it onto the web page.
-  2. Watch it scan at http://shatner:8899/ (LAN/tailnet).
+  2. Watch it scan at http://your-ocr-host:8899/ (LAN/tailnet).
   3. Outputs land in OCR-Inbox\\Processed: <name>.md and <name>.xlsx,
      alongside the original (moved there when done).
 
