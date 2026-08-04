@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+jobs/
+service/jobs/
+*.log

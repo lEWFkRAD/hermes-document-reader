@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>OCR Live Viewer</title>
+<style>
+  :root {
+    --bg: #0a0a14; --card: #151520; --border: #2a2a3a;
+    --accent: #00d4ff; --green: #00ff88; --red: #ff6b6b; --dim: #888;
+    --text: #e0e0e0;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; }
+  header { padding: 12px 20px; background: #16213e; border-bottom: 2px solid var(--accent); display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  header h1 { font-size: 1.05em; color: var(--accent); font-weight: 700; white-space: nowrap; }
+  #fileName { color: var(--text); font-size: 0.9em; overflow: hidden; text-overflow: ellipsis; max-width: 34ch; white-space: nowrap; }
+  #stateBadge { padding: 3px 12px; border-radius: 20px; font-size: 0.78em; font-weight: 700; background: rgba(0,212,255,0.15); color: var(--accent); border: 1px solid rgba(0,212,255,0.3); white-space: nowrap; }
+  #stateBadge.finished { background: rgba(0,255,136,0.15); color: var(--green); border-color: rgba(0,255,136,0.3); }
+  #stateBadge.failed { background: rgba(255,107,107,0.15); color: var(--red); border-color: rgba(255,107,107,0.3); }
+  .progress-wrap { flex: 1; min-width: 160px; height: 10px; background: rgba(255,255,255,0.07); border-radius: 5px; overflow: hidden; }
+  #progressBar { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), var(--green)); transition: width 0.4s; }
+  #progressText { font-size: 0.85em; color: var(--dim); white-space: nowrap; }
+  label.follow { font-size: 0.8em; color: var(--dim); display: flex; align-items: center; gap: 5px; cursor: pointer; white-space: nowrap; }
+  #pageStrip { display: flex; gap: 6px; padding: 8px 20px; overflow-x: auto; background: var(--card); border-bottom: 1px solid var(--border); }
+  .chip { min-width: 34px; text-align: center; padding: 4px 8px; border-radius: 8px; font-size: 0.8em; cursor: pointer; border: 1px solid var(--border); color: var(--dim); background: transparent; user-select: none; }
+  .chip.pending { opacity: 0.45; }
+  .chip.working { border-color: var(--accent); color: var(--accent); animation: pulse 1s infinite alternate; }
+  .chip.done { border-color: rgba(0,255,136,0.4); color: var(--green); }
+  .chip.error { border-color: var(--red); color: var(--red); }
+  .chip.selected { background: rgba(0,212,255,0.15); border-color: var(--accent); color: #fff; }
+  @keyframes pulse { from { box-shadow: 0 0 2px var(--accent); } to { box-shadow: 0 0 10px var(--accent); } }
+  main { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--border); overflow: hidden; }
+  .pane { background: var(--bg); overflow: auto; position: relative; }
+  .pane-label { position: sticky; top: 0; z-index: 2; background: rgba(21,21,32,0.95); padding: 6px 14px; font-size: 0.75em; letter-spacing: 1px; text-transform: uppercase; color: var(--dim); border-bottom: 1px solid var(--border); }
+  #pageImg { width: 100%; display: block; }
+  #ocrOut { padding: 18px 22px; line-height: 1.55; font-size: 0.92em; }
+  #ocrOut table { border-collapse: collapse; margin: 10px 0; width: 100%; }
+  #ocrOut th, #ocrOut td { border: 1px solid var(--border); padding: 5px 9px; font-size: 0.9em; }
+  #ocrOut th { background: rgba(0,212,255,0.1); color: var(--accent); }
+  #ocrOut h1, #ocrOut h2, #ocrOut h3 { color: var(--accent); margin: 12px 0 6px; }
+  #ocrOut p { margin: 6px 0; }
+  .waiting { color: var(--dim); padding: 30px; text-align: center; font-style: italic; }
+  #pageMeta { font-size: 0.75em; color: var(--dim); padding: 4px 14px; }
+
+  /* --- scanning beam over the page image --- */
+  #imgWrap { position: relative; }
+  #scanBar {
+    display: none; position: absolute; left: 0; right: 0; height: 90px;
+    top: 0; pointer-events: none; z-index: 3;
+    will-change: top;
+    background: linear-gradient(180deg,
+      rgba(255,190,90,0) 0%,
+      rgba(255,190,90,0.12) 35%,
+      rgba(255,214,120,0.5) 50%,
+      rgba(255,190,90,0.12) 65%,
+      rgba(255,190,90,0) 100%);
+    mix-blend-mode: screen;
+  }
+  #scanBar::after {
+    content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 2px;
+    background: rgba(255,244,214,0.98);
+    box-shadow: 0 0 14px 4px rgba(255,205,110,0.95), 0 0 40px 10px rgba(255,180,80,0.35);
+  }
+  #imgWrap.scanning #scanBar { display: block; animation: sweep 2.2s linear infinite; }
+  @keyframes sweep {
+    0%   { top: -90px; }
+    55%  { top: calc(100% - 20px); }
+    100% { top: -90px; }
+  }
+  #imgWrap.scanning #pageImg { filter: saturate(1.05) contrast(1.02); }
+
+  /* --- streaming text arriving on the right --- */
+  #livePre {
+    margin: 0; padding: 18px 22px; white-space: pre-wrap; word-break: break-word;
+    font-family: 'Consolas', monospace; font-size: 0.85em; line-height: 1.5; color: var(--text);
+  }
+  #livePre .fresh { animation: arrive 0.6s ease-out; color: var(--green); }
+  @keyframes arrive {
+    from { opacity: 0; transform: translateX(-14px); text-shadow: 0 0 8px rgba(0,255,136,0.9); }
+    to   { opacity: 1; transform: translateX(0); text-shadow: none; }
+  }
+  .caret {
+    display: inline-block; width: 8px; height: 1em; vertical-align: text-bottom;
+    background: var(--accent); animation: blink 0.8s steps(2) infinite;
+    box-shadow: 0 0 8px rgba(0,212,255,0.9);
+  }
+  @keyframes blink { to { opacity: 0; } }
+</style>
+</head>
+<body>
+  <header>
+    <h1>OCR Live</h1>
+    <span id="fileName">…</span>
+    <span id="stateBadge">starting</span>
+    <div class="progress-wrap"><div id="progressBar"></div></div>
+    <span id="progressText">0 / 0</span>
+    <label class="follow"><input type="checkbox" id="follow" checked> follow</label>
+  </header>
+  <div id="pageStrip"></div>
+  <main>
+    <div class="pane">
+      <div class="pane-label">Scanned page <span id="metaLeft"></span></div>
+      <div id="imgWrap">
+        <img id="pageImg" alt="" style="display:none">
+        <div id="scanBar"></div>
+      </div>
+      <div class="waiting" id="imgWait">waiting for pages…</div>
+    </div>
+    <div class="pane">
+      <div class="pane-label">GRM output <span id="metaRight"></span></div>
+      <div id="ocrOut"><div class="waiting">waiting for OCR…</div></div>
+    </div>
+  </main>
+<script>
+let selected = null;      // page number the user clicked (null = auto-follow)
+let shown = 0;            // page currently displayed
+let shownState = null;    // state of the shown page at last render
+let lastState = {};
+
+function pickPage(st) {
+  if (selected) return selected;
+  if (st.state === 'finished') return st.total;
+  // show the page being worked on, or the last done one
+  return st.current || 1;
+}
+
+async function refresh() {
+  let st;
+  try { st = await (await fetch('status.json')).json(); }
+  catch { return; }
+  lastState = st;
+
+  document.getElementById('fileName').textContent = st.current_file || st.name || '';
+  const badge = document.getElementById('stateBadge');
+  badge.textContent = st.state;
+  badge.className = st.state === 'finished' ? 'finished' : (st.state === 'failed' ? 'failed' : '');
+  document.getElementById('progressText').textContent = `${st.done} / ${st.total}`;
+  document.getElementById('progressBar').style.width = st.total ? (100 * st.done / st.total) + '%' : '0%';
+
+  const strip = document.getElementById('pageStrip');
+  if (strip.children.length !== (st.pages || []).length) {
+    strip.innerHTML = '';
+    (st.pages || []).forEach(p => {
+      const c = document.createElement('div');
+      c.id = 'chip' + p.n;
+      c.textContent = p.n;
+      if (p.file) c.title = p.file;
+      c.onclick = () => { selected = p.n; document.getElementById('follow').checked = false; show(p.n, true); };
+      strip.appendChild(c);
+    });
+  }
+  (st.pages || []).forEach(p => {
+    const c = document.getElementById('chip' + p.n);
+    if (c) c.className = 'chip ' + p.state + (p.n === shown ? ' selected' : '');
+  });
+
+  if (document.getElementById('follow').checked) selected = null;
+  const want = pickPage(st);
+  const wantState = ((st.pages || [])[want - 1] || {}).state;
+  if (want && (want !== shown || wantState !== shownState)) {
+    shownState = wantState;
+    show(want, false);
+  } else if (want === shown) updateMeta(st);
+}
+
+function updateMeta(st) {
+  const p = (st.pages || [])[shown - 1];
+  if (!p) return;
+  document.getElementById('metaLeft').textContent = `— p.${shown}`;
+  document.getElementById('metaRight').textContent =
+    p.state === 'done' ? `— p.${shown} · ${p.secs}s · ${p.chars} chars`
+    : p.state === 'working' ? `— p.${shown} · reading…`
+    : p.state === 'error' ? `— p.${shown} · ERROR` : `— p.${shown}`;
+}
+
+let partialLen = 0;      // chars of streamed text already displayed
+let finalShown = 0;      // page whose FINAL html is currently rendered
+
+function esc(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+async function pollPartial() {
+  const p = (lastState.pages || [])[shown - 1] || {};
+  const wrap = document.getElementById('imgWrap');
+  wrap.classList.toggle('scanning', p.state === 'working');
+  if (p.state !== 'working') return;
+
+  let text = '';
+  try {
+    const r = await fetch(`page_${shown}.partial.md`);
+    if (r.ok) text = await r.text();
+  } catch { /* not there yet */ }
+
+  const out = document.getElementById('ocrOut');
+  if (!text) {
+    if (!out.querySelector('#livePre'))
+      out.innerHTML = '<pre id="livePre"><span class="caret"></span></pre>';
+    return;
+  }
+  // if the stream restarted or shrank (parse fallback switch), redraw whole
+  if (text.length < partialLen) partialLen = 0;
+  const oldPart = text.slice(0, partialLen);
+  const newPart = text.slice(partialLen);
+  partialLen = text.length;
+  out.innerHTML = `<pre id="livePre">${esc(oldPart)}<span class="fresh">${esc(newPart)}</span><span class="caret"></span></pre>`;
+  const pane = out.parentElement;
+  pane.scrollTop = pane.scrollHeight;
+}
+
+async function show(n, force) {
+  if (n !== shown) { partialLen = 0; finalShown = 0; }
+  shown = n;
+  const img = document.getElementById('pageImg');
+  const wait = document.getElementById('imgWait');
+  img.src = `page_${n}.jpg`;
+  img.style.display = '';
+  img.onerror = () => { img.style.display = 'none'; wait.style.display = ''; };
+  img.onload = () => { wait.style.display = 'none'; };
+
+  const out = document.getElementById('ocrOut');
+  const p = (lastState.pages || [])[n - 1] || {};
+  document.getElementById('imgWrap').classList.toggle('scanning', p.state === 'working');
+  if (p.state === 'done') {
+    if (finalShown === n) { updateMeta(lastState); return; }
+    try {
+      const html = await (await fetch(`page_${n}.html`)).text();
+      out.innerHTML = html;
+      finalShown = n;
+    } catch { out.innerHTML = '<div class="waiting">could not load output</div>'; }
+  } else if (p.state === 'error') {
+    out.innerHTML = `<div class="waiting">page failed: ${p.error || ''}</div>`;
+  } else if (p.state === 'working') {
+    if (!out.querySelector('#livePre'))
+      out.innerHTML = '<pre id="livePre"><span class="caret"></span></pre>';
+  } else {
+    out.innerHTML = '<div class="waiting">not processed yet</div>';
+  }
+  updateMeta(lastState);
+}
+
+refresh();
+setInterval(refresh, 1000);
+setInterval(pollPartial, 500);
+</script>
+</body>
+</html>

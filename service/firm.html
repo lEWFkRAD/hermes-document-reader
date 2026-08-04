@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bearden Document Reader</title>
+<style>
+  /* Hermes desktop design language, mirrored for a standalone page:
+     flat not boxed, tokens not literals, text hierarchy by alpha,
+     hairline strokes, one accent, quiet motion. */
+  :root {
+    --base: 20 20 24;
+    --paper: #f6f6f7;
+    --accent: #0053fd;
+    --warm: 255 190 90;
+    --ui-bg: var(--paper);
+    --ui-text-primary: rgb(var(--base) / 0.94);
+    --ui-text-secondary: rgb(var(--base) / 0.74);
+    --ui-text-tertiary: rgb(var(--base) / 0.54);
+    --ui-text-quaternary: rgb(var(--base) / 0.36);
+    --ui-stroke-secondary: rgb(var(--base) / 0.16);
+    --ui-stroke-tertiary: rgb(var(--base) / 0.09);
+    --ui-bg-quaternary: rgb(var(--base) / 0.06);
+    --hover: rgb(var(--base) / 0.05);
+    --ok: #1a7f37;
+    --bad: #b42318;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --base: 235 236 240;
+      --paper: #161618;
+      --accent: #6a9bff;
+      --ok: #4ade80;
+      --bad: #f87171;
+    }
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: var(--ui-bg); color: var(--ui-text-primary);
+    display: flex; flex-direction: column; font-size: 14px;
+  }
+  header {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 10px 20px; border-bottom: 1px solid var(--ui-stroke-tertiary);
+  }
+  header h1 { font-size: 0.95rem; font-weight: 600; color: var(--ui-text-primary); white-space: nowrap; }
+  #fileName { color: var(--ui-text-secondary); font-size: 0.85rem; overflow: hidden; text-overflow: ellipsis; max-width: 30ch; white-space: nowrap; }
+  #stateBadge { font-size: 0.75rem; font-weight: 600; color: var(--ui-text-tertiary); white-space: nowrap; text-transform: lowercase; }
+  #stateBadge.finished { color: var(--ok); }
+  #stateBadge.failed { color: var(--bad); }
+  #stateBadge.busy { color: var(--accent); }
+  .progress-wrap { flex: 1; min-width: 140px; height: 2px; background: var(--ui-stroke-tertiary); border-radius: 1px; overflow: hidden; }
+  #progressBar { height: 100%; width: 0%; background: var(--accent); transition: width 0.4s; }
+  #progressText { font-size: 0.8rem; color: var(--ui-text-tertiary); white-space: nowrap; }
+  .btn {
+    background: var(--ui-bg-quaternary); color: var(--ui-text-primary);
+    border: none; padding: 6px 14px; border-radius: 4px;
+    font-size: 0.85rem; font-weight: 500; cursor: pointer; white-space: nowrap;
+    transition: background 0.1s;
+  }
+  .btn:hover { background: var(--hover); }
+  .btn.primary { background: var(--accent); color: #fff; }
+  .btn.primary:hover { filter: brightness(1.08); }
+  label.follow { font-size: 0.8rem; color: var(--ui-text-tertiary); display: flex; align-items: center; gap: 5px; cursor: pointer; white-space: nowrap; }
+  #queueLine { padding: 4px 20px; font-size: 0.8rem; color: var(--ui-text-tertiary); border-bottom: 1px solid var(--ui-stroke-tertiary); display: none; }
+  #pageStrip { display: flex; gap: 4px; padding: 8px 20px; overflow-x: auto; border-bottom: 1px solid var(--ui-stroke-tertiary); }
+  .chip {
+    min-width: 30px; text-align: center; padding: 3px 8px; border-radius: 4px;
+    font-size: 0.78rem; cursor: pointer; color: var(--ui-text-quaternary);
+    user-select: none; transition: background 0.1s, color 0.1s;
+  }
+  .chip:hover { background: var(--hover); }
+  .chip.working { color: var(--accent); font-weight: 600; }
+  .chip.done { color: var(--ui-text-secondary); }
+  .chip.error { color: var(--bad); }
+  .chip.selected { background: var(--ui-bg-quaternary); color: var(--ui-text-primary); font-weight: 600; }
+  main { flex: 1; display: grid; grid-template-columns: 1fr 1fr; overflow: hidden; }
+  .pane { overflow: auto; position: relative; }
+  .pane + .pane { border-left: 1px solid var(--ui-stroke-tertiary); }
+  .pane-label {
+    position: sticky; top: 0; z-index: 2; background: var(--ui-bg);
+    padding: 6px 16px; font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--ui-text-quaternary); border-bottom: 1px solid var(--ui-stroke-tertiary);
+  }
+  #pageImg { width: 100%; display: block; }
+  #ocrOut { padding: 16px 20px; line-height: 1.55; font-size: 0.9rem; color: var(--ui-text-primary); }
+  #ocrOut table { border-collapse: collapse; margin: 10px 0; width: 100%; }
+  #ocrOut th, #ocrOut td { border: 1px solid var(--ui-stroke-tertiary); padding: 5px 9px; font-size: 0.85rem; }
+  #ocrOut th { color: var(--ui-text-secondary); font-weight: 600; text-align: left; }
+  #ocrOut h1, #ocrOut h2, #ocrOut h3 { color: var(--ui-text-primary); margin: 12px 0 6px; font-size: 1.05em; }
+  #ocrOut p { margin: 6px 0; }
+  .waiting { color: var(--ui-text-quaternary); padding: 30px; text-align: center; }
+  #imgWrap { position: relative; }
+  #scanBar {
+    display: none; position: absolute; left: 0; right: 0; height: 80px;
+    top: 0; pointer-events: none; z-index: 3; will-change: top;
+    background: linear-gradient(180deg,
+      rgb(var(--warm) / 0) 0%, rgb(var(--warm) / 0.10) 35%,
+      rgb(var(--warm) / 0.35) 50%, rgb(var(--warm) / 0.10) 65%, rgb(var(--warm) / 0) 100%);
+    mix-blend-mode: multiply;
+  }
+  @media (prefers-color-scheme: dark) { #scanBar { mix-blend-mode: screen; } }
+  #scanBar::after {
+    content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 1.5px;
+    background: rgb(var(--warm) / 0.9);
+    box-shadow: 0 0 10px 2px rgb(var(--warm) / 0.55);
+  }
+  #imgWrap.scanning #scanBar { display: block; animation: sweep 2.2s linear infinite; }
+  @keyframes sweep { 0% { top: -80px; } 55% { top: calc(100% - 20px); } 100% { top: -80px; } }
+  @media (prefers-reduced-motion: reduce) { #imgWrap.scanning #scanBar { animation-duration: 6s; } }
+  #livePre {
+    margin: 0; padding: 16px 20px; white-space: pre-wrap; word-break: break-word;
+    font-family: Consolas, monospace; font-size: 0.82rem; line-height: 1.5; color: var(--ui-text-secondary);
+  }
+  #livePre .fresh { color: var(--accent); animation: settle 0.8s ease-out forwards; }
+  @keyframes settle { to { color: var(--ui-text-secondary); } }
+  .caret { display: inline-block; width: 7px; height: 1em; vertical-align: text-bottom; background: var(--accent); animation: blink 0.9s steps(2) infinite; }
+  @keyframes blink { to { opacity: 0; } }
+  #idle { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 14px; z-index: 5; background: var(--ui-bg); }
+  #idle .big { font-size: 1.1rem; font-weight: 600; color: var(--ui-text-primary); }
+  #idle .hint { color: var(--ui-text-tertiary); max-width: 48ch; text-align: center; line-height: 1.7; font-size: 0.88rem; }
+  #idle code { color: var(--ui-text-secondary); background: var(--ui-bg-quaternary); padding: 1px 5px; border-radius: 3px; font-size: 0.85em; }
+  #dropOverlay {
+    position: fixed; inset: 12px; z-index: 50; display: none; align-items: center; justify-content: center;
+    border: 1.5px dashed var(--accent); border-radius: 6px; background: var(--ui-bg);
+    opacity: 0.96; font-size: 1.1rem; color: var(--accent); font-weight: 600;
+  }
+  #historyPanel {
+    position: fixed; right: 0; top: 0; bottom: 0; width: 360px; max-width: 90vw;
+    background: var(--ui-bg); border-left: 1px solid var(--ui-stroke-secondary);
+    box-shadow: 0 8px 32px rgb(0 0 0 / 0.18);
+    z-index: 40; transform: translateX(100%); transition: transform 0.2s; overflow-y: auto;
+  }
+  #historyPanel.open { transform: translateX(0); }
+  #historyPanel h2 { font-size: 0.85rem; font-weight: 600; color: var(--ui-text-primary); padding: 14px 16px 8px; }
+  .hist { padding: 10px 16px; font-size: 0.82rem; }
+  .hist + .hist { border-top: 1px solid var(--ui-stroke-tertiary); }
+  .hist .n { color: var(--ui-text-primary); font-weight: 500; word-break: break-all; }
+  .hist .m { color: var(--ui-text-quaternary); margin: 2px 0 4px; }
+  .hist a { color: var(--accent); margin-right: 14px; text-decoration: none; font-weight: 600; }
+  .hist a:hover { text-decoration: underline; }
+  .hist .err { color: var(--bad); }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Bearden Document Reader</h1>
+    <span id="fileName"></span>
+    <span id="stateBadge">ready</span>
+    <div class="progress-wrap"><div id="progressBar"></div></div>
+    <span id="progressText"></span>
+    <button class="btn primary" id="uploadBtn">Scan a document</button>
+    <button class="btn" id="historyBtn">Finished files</button>
+    <label class="follow"><input type="checkbox" id="follow" checked> follow</label>
+    <input type="file" id="fileInput" multiple accept=".pdf,.png,.jpg,.jpeg,.tiff,.bmp" style="display:none">
+  </header>
+  <div id="queueLine"></div>
+  <div id="pageStrip"></div>
+  <main>
+    <div class="pane">
+      <div class="pane-label">Scanned page <span id="metaLeft"></span></div>
+      <div id="imgWrap">
+        <img id="pageImg" alt="" style="display:none">
+        <div id="scanBar"></div>
+      </div>
+      <div class="waiting" id="imgWait" style="display:none">waiting for pages…</div>
+      <div id="idle">
+        <div class="big">Drop a scanned PDF anywhere on this page</div>
+        <div class="hint">or click <b>Scan a document</b> above,
+          or save the file into <code>M:\OCR-Inbox</code> (<code>\\SHATNER\M\OCR-Inbox</code>).<br><br>
+          You will watch it being read here. Finished Excel and text files appear in
+          <code>OCR-Inbox\Processed</code> and under <b>Finished files</b>.</div>
+      </div>
+    </div>
+    <div class="pane">
+      <div class="pane-label">What the computer reads <span id="metaRight"></span></div>
+      <div id="ocrOut"><div class="waiting">nothing being read right now</div></div>
+    </div>
+  </main>
+  <div id="dropOverlay">Drop to scan</div>
+  <div id="historyPanel"><h2>Finished files</h2><div id="histList"></div></div>
+<script>
+let selected = null, shown = 0, shownState = null, lastState = {}, partialLen = 0, finalShown = 0;
+function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+const $ = id => document.getElementById(id);
+function pickPage(job) {
+  if (selected) return selected;
+  if (job.state === 'finished') return job.total;
+  return job.current || 1;
+}
+async function refresh() {
+  let st;
+  try { st = await (await fetch('/api/state')).json(); } catch { return; }
+  lastState = st;
+  const job = st.job;
+  const q = $('queueLine');
+  if (st.queue && st.queue.length) {
+    q.style.display = '';
+    q.textContent = 'Waiting in line: ' + st.queue.map(x => x.name).join('  ·  ');
+  } else q.style.display = 'none';
+  const h = $('histList');
+  h.innerHTML = (st.history || []).map(e => `
+    <div class="hist">
+      <div class="n">${esc(e.name)}</div>
+      <div class="m">${e.when} · ${e.pages} pages · ${Math.round(e.secs)}s${e.errors ? ` · <span class="err">${e.errors} page(s) failed</span>` : ''}</div>
+      <div>${e.links.xlsx ? `<a href="${e.links.xlsx}">Excel</a>` : ''}<a href="${e.links.md}">Text</a></div>
+    </div>`).join('') || '<div class="hist"><div class="m">nothing yet</div></div>';
+  const badge = $('stateBadge');
+  if (!job) {
+    $('idle').style.display = 'flex';
+    $('imgWrap').classList.remove('scanning');
+    badge.textContent = (st.queue && st.queue.length) ? 'starting…' : 'ready';
+    badge.className = '';
+    $('fileName').textContent = '';
+    $('progressText').textContent = '';
+    $('progressBar').style.width = '0%';
+    $('pageStrip').innerHTML = '';
+    shown = 0; shownState = null; finalShown = 0;
+    return;
+  }
+  $('idle').style.display = 'none';
+  $('fileName').textContent = job.current_file || job.name || '';
+  const labels = { loading: 'opening file', rendering: 'preparing pages', ocr: 'reading', finished: 'done', failed: 'problem' };
+  badge.textContent = labels[job.state] || job.state;
+  badge.className = job.state === 'finished' ? 'finished' : (job.state === 'failed' ? 'failed' : 'busy');
+  $('progressText').textContent = job.total ? `page ${Math.min(job.current, job.total)} of ${job.total}` : '';
+  $('progressBar').style.width = job.total ? (100 * job.done / job.total) + '%' : '0%';
+  const strip = $('pageStrip');
+  if (strip.children.length !== (job.pages || []).length) {
+    strip.innerHTML = '';
+    (job.pages || []).forEach(p => {
+      const c = document.createElement('div');
+      c.id = 'chip' + p.n; c.textContent = p.n;
+      c.onclick = () => { selected = p.n; $('follow').checked = false; show(p.n); };
+      strip.appendChild(c);
+    });
+    shown = 0; shownState = null; finalShown = 0;
+  }
+  (job.pages || []).forEach(p => {
+    const c = $('chip' + p.n);
+    if (c) c.className = 'chip ' + p.state + (p.n === shown ? ' selected' : '');
+  });
+  if ($('follow').checked) selected = null;
+  const want = pickPage(job);
+  const wantState = ((job.pages || [])[want - 1] || {}).state;
+  if (want && (want !== shown || wantState !== shownState)) { shownState = wantState; show(want); }
+  else if (want === shown) updateMeta(job);
+  const p = (job.pages || [])[shown - 1] || {};
+  $('imgWrap').classList.toggle('scanning', p.state === 'working');
+  if (p.state === 'working') {
+    const text = job.partial || '';
+    const out = $('ocrOut');
+    if (!text) {
+      if (!out.querySelector('#livePre')) out.innerHTML = '<pre id="livePre"><span class="caret"></span></pre>';
+    } else {
+      if (text.length < partialLen) partialLen = 0;
+      const oldPart = text.slice(0, partialLen), newPart = text.slice(partialLen);
+      partialLen = text.length;
+      out.innerHTML = `<pre id="livePre">${esc(oldPart)}<span class="fresh">${esc(newPart)}</span><span class="caret"></span></pre>`;
+      const pane = out.parentElement;
+      pane.scrollTop = pane.scrollHeight;
+    }
+  }
+}
+function updateMeta(job) {
+  const p = (job.pages || [])[shown - 1];
+  if (!p) return;
+  $('metaLeft').textContent = `— p.${shown}`;
+  $('metaRight').textContent =
+    p.state === 'done' ? `— p.${shown} · ${p.secs}s · ${p.chars} chars`
+    : p.state === 'working' ? `— p.${shown} · reading…`
+    : p.state === 'error' ? `— p.${shown} · problem` : `— p.${shown}`;
+}
+async function show(n) {
+  if (n !== shown) { partialLen = 0; }
+  shown = n;
+  const job = lastState.job; if (!job) return;
+  const base = job.base;
+  const img = $('pageImg'), wait = $('imgWait');
+  img.src = `${base}/page_${n}.jpg`;
+  img.style.display = '';
+  img.onerror = () => { img.style.display = 'none'; wait.style.display = ''; };
+  img.onload = () => { wait.style.display = 'none'; };
+  const out = $('ocrOut');
+  const p = (job.pages || [])[n - 1] || {};
+  $('imgWrap').classList.toggle('scanning', p.state === 'working');
+  if (p.state === 'done') {
+    if (finalShown === n) { updateMeta(job); return; }
+    try { out.innerHTML = await (await fetch(`${base}/page_${n}.html`)).text(); finalShown = n; }
+    catch { out.innerHTML = '<div class="waiting">could not load output</div>'; }
+  } else if (p.state === 'error') {
+    out.innerHTML = `<div class="waiting">this page could not be read: ${esc(p.error || '')}</div>`;
+  } else if (p.state === 'working') {
+    if (!out.querySelector('#livePre')) out.innerHTML = '<pre id="livePre"><span class="caret"></span></pre>';
+  } else {
+    out.innerHTML = '<div class="waiting">not read yet</div>';
+  }
+  updateMeta(job);
+}
+async function uploadFiles(files) {
+  for (const f of files) {
+    await fetch('/api/upload?name=' + encodeURIComponent(f.name), { method: 'POST', body: f });
+  }
+}
+$('uploadBtn').onclick = () => $('fileInput').click();
+$('fileInput').onchange = e => { uploadFiles([...e.target.files]); e.target.value = ''; };
+let dragDepth = 0;
+document.addEventListener('dragenter', e => { e.preventDefault(); dragDepth++; $('dropOverlay').style.display = 'flex'; });
+document.addEventListener('dragleave', e => { e.preventDefault(); if (--dragDepth <= 0) { dragDepth = 0; $('dropOverlay').style.display = 'none'; } });
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('drop', e => {
+  e.preventDefault(); dragDepth = 0; $('dropOverlay').style.display = 'none';
+  if (e.dataTransfer.files.length) uploadFiles([...e.dataTransfer.files]);
+});
+$('historyBtn').onclick = () => $('historyPanel').classList.toggle('open');
+document.addEventListener('click', e => {
+  const hp = $('historyPanel');
+  if (hp.classList.contains('open') && !hp.contains(e.target) && e.target.id !== 'historyBtn') hp.classList.remove('open');
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') $('historyPanel').classList.remove('open'); });
+refresh();
+setInterval(refresh, 600);
+</script>
+</body>
+</html>
