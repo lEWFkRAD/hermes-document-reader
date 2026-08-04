@@ -152,6 +152,7 @@
     <div class="progress-wrap"><div id="progressBar"></div></div>
     <span id="progressText"></span>
     <button class="btn primary" id="uploadBtn">Scan a document</button>
+    <button class="btn" id="stopBtn" style="display:none;color:var(--bad)">Stop this scan</button>
     <button class="btn" id="historyBtn">Finished files</button>
     <label class="follow"><input type="checkbox" id="follow" checked> follow</label>
     <input type="file" id="fileInput" multiple accept=".pdf,.png,.jpg,.jpeg,.tiff,.bmp" style="display:none">
@@ -169,7 +170,7 @@
       <div id="idle">
         <div class="big">Drop a scanned PDF anywhere on this page</div>
         <div class="hint">or click <b>Scan a document</b> above,
-          or save the file into <code>M:\OCR-Inbox</code> (<code>\\YOUR-SERVER\share\OCR-Inbox</code>).<br><br>
+          or save the file into <code>M:\OCR-Inbox</code> (<code>\\YOUR-SERVER\M\OCR-Inbox</code>).<br><br>
           You will watch it being read here. Finished Excel and text files appear in
           <code>OCR-Inbox\Processed</code> and under <b>Finished files</b>.</div>
       </div>
@@ -183,8 +184,15 @@
   <div id="historyPanel"><h2>Finished files</h2><div id="histList"></div></div>
 <script>
 let selected = null, shown = 0, shownState = null, lastState = {}, partialLen = 0, finalShown = 0;
+let lastHistHtml = '', prefetchedJob = null;
 function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 const $ = id => document.getElementById(id);
+
+function prefetchPages(job) {
+  if (!job || prefetchedJob === job.id + ':' + job.total) return;
+  prefetchedJob = job.id + ':' + job.total;
+  for (let n = 1; n <= job.total; n++) { const im = new Image(); im.src = `${job.base}/page_${n}.jpg`; }
+}
 function pickPage(job) {
   if (selected) return selected;
   if (job.state === 'finished') return job.total;
@@ -201,14 +209,16 @@ async function refresh() {
     q.textContent = 'Waiting in line: ' + st.queue.map(x => x.name).join('  ·  ');
   } else q.style.display = 'none';
   const h = $('histList');
-  h.innerHTML = (st.history || []).map(e => `
+  const histHtml = (st.history || []).map(e => `
     <div class="hist">
       <div class="n">${esc(e.name)}</div>
       <div class="m">${e.when} · ${e.pages} pages · ${Math.round(e.secs)}s${e.errors ? ` · <span class="err">${e.errors} page(s) failed</span>` : ''}</div>
       <div>${e.links.xlsx ? `<a href="${e.links.xlsx}">Excel</a>` : ''}<a href="${e.links.md}">Text</a></div>
     </div>`).join('') || '<div class="hist"><div class="m">nothing yet</div></div>';
+  if (histHtml !== lastHistHtml) { lastHistHtml = histHtml; h.innerHTML = histHtml; }
   const badge = $('stateBadge');
   if (!job) {
+    $('stopBtn').style.display = 'none';
     $('idle').style.display = 'flex';
     $('imgWrap').classList.remove('scanning');
     badge.textContent = (st.queue && st.queue.length) ? 'starting…' : 'ready';
@@ -222,7 +232,8 @@ async function refresh() {
   }
   $('idle').style.display = 'none';
   $('fileName').textContent = job.current_file || job.name || '';
-  const labels = { loading: 'opening file', rendering: 'preparing pages', ocr: 'reading', finished: 'done', failed: 'problem' };
+  $('stopBtn').style.display = ['loading','rendering','ocr'].includes(job.state) ? '' : 'none';
+  const labels = { loading: 'opening file', rendering: 'preparing pages', ocr: 'reading', finished: 'done', failed: 'problem', cancelled: 'stopped' };
   badge.textContent = labels[job.state] || job.state;
   badge.className = job.state === 'finished' ? 'finished' : (job.state === 'failed' ? 'failed' : 'busy');
   $('progressText').textContent = job.total ? `page ${Math.min(job.current, job.total)} of ${job.total}` : '';
@@ -247,6 +258,7 @@ async function refresh() {
   const wantState = ((job.pages || [])[want - 1] || {}).state;
   if (want && (want !== shown || wantState !== shownState)) { shownState = wantState; show(want); }
   else if (want === shown) updateMeta(job);
+  prefetchPages(job);
   const p = (job.pages || [])[shown - 1] || {};
   $('imgWrap').classList.toggle('scanning', p.state === 'working');
   if (p.state === 'working') {
@@ -254,7 +266,9 @@ async function refresh() {
     const out = $('ocrOut');
     if (!text) {
       if (!out.querySelector('#livePre')) out.innerHTML = '<pre id="livePre"><span class="caret"></span></pre>';
-    } else {
+    } else if (text.length !== partialLen || !out.querySelector('#livePre')) {
+      // only touch the DOM when new text actually arrived — no caret-reset
+      // flicker on quiet polls
       if (text.length < partialLen) partialLen = 0;
       const oldPart = text.slice(0, partialLen), newPart = text.slice(partialLen);
       partialLen = text.length;
@@ -305,6 +319,7 @@ async function uploadFiles(files) {
   }
 }
 $('uploadBtn').onclick = () => $('fileInput').click();
+$('stopBtn').onclick = () => { if (confirm('Stop reading this document?')) fetch('/api/cancel', { method: 'POST' }); };
 $('fileInput').onchange = e => { uploadFiles([...e.target.files]); e.target.value = ''; };
 let dragDepth = 0;
 document.addEventListener('dragenter', e => { e.preventDefault(); dragDepth++; $('dropOverlay').style.display = 'flex'; });

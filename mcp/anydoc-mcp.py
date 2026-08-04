@@ -6,7 +6,7 @@ Exposes:
   - convert_document(file_path) -> str  : Convert PDF/Word/Excel/etc. to Markdown
   - convert_with_ocr(file_path) -> str  : OCR scanned PDFs first, then convert
 
-Runs on the gateway box (CPU-only) under the Hermes venv python
+Runs on YOUR-SERVER (CPU-only) under the Hermes venv python
 (<hermes-home>/hermes-agent/venv), which has
 the `mcp` SDK and an editable install of chandra (<path-to-chandra-clone>).
 The anydoc Rust extension (firecrawl-anydoc) lives in Python 3.14's site-packages
@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 # anydoc (Rust extension, abi3) is installed under Python 3.14's site-packages
-_ANYDOC_SITE = Path("C:/path/to/python/Lib/site-packages")
+_ANYDOC_SITE = Path("C:/Users/youruser/AppData/Local/Programs/Python/Python314/Lib/site-packages")
 if _ANYDOC_SITE.exists() and str(_ANYDOC_SITE) not in sys.path:
     sys.path.insert(0, str(_ANYDOC_SITE))
 
@@ -91,10 +91,15 @@ def convert_with_ocr(file_path: str) -> str:
         if "OCR" not in str(e) and "Unrecognized" not in str(e):
             raise
         # Fall through to GRM OCR for scanned/image PDFs
+    from concurrent.futures import ThreadPoolExecutor
+
     from chandra.input import load_file
 
     images = load_file(str(file_path), {})
-    pages = [grm_ocr.ocr_page_markdown(img) for img in images]
+    # 3 concurrent page requests — the vLLM server batches them; order is
+    # preserved by map()
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        pages = list(pool.map(grm_ocr.ocr_page_markdown, images))
     return "\n\n".join(pages)
 
 

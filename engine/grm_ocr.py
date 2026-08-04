@@ -15,6 +15,7 @@ Used by:
 
 import base64
 import io
+import os
 
 from bs4 import BeautifulSoup
 from openai import OpenAI
@@ -23,11 +24,11 @@ from chandra.model.util import detect_repeat_token, scale_to_fit
 from chandra.output import parse_html, parse_markdown
 from chandra.prompts import PROMPT_MAPPING
 
-API_BASE = "http://your-vllm-host:8000/v1"
-API_KEY = "local"
-MODEL = "grm-2.6-plus-0628"
-MAX_TOKENS = 8192
-REQUEST_TIMEOUT = 300
+API_BASE = os.environ.get("GRM_OCR_API_BASE", "http://your-vllm-host:8000/v1")
+API_KEY = os.environ.get("GRM_OCR_API_KEY", "local")
+MODEL = os.environ.get("GRM_OCR_MODEL", "grm-2.6-plus-0628")
+MAX_TOKENS = int(os.environ.get("GRM_OCR_MAX_TOKENS", "8192"))
+REQUEST_TIMEOUT = int(os.environ.get("GRM_OCR_TIMEOUT", "300"))
 
 _client = None
 

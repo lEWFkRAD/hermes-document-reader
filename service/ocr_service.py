@@ -21,14 +21,17 @@ single-shot viewer had to retry around.
 """
 
 import argparse
+import copy
 import io
 import json
+import os
 import re
 import shutil
 import sys
 import threading
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -37,6 +40,8 @@ from openpyxl import Workbook
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import filetype
+import pypdfium2 as pdfium
 from chandra.input import load_file
 
 import grm_ocr
@@ -47,6 +52,10 @@ JOBS_DIR = STATE_DIR / "jobs"
 HISTORY_PATH = STATE_DIR / "history.json"
 DISPLAY_WIDTH = 1100
 SUPPORTED = {".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".bmp"}
+# Concurrent page requests to the vLLM server. The 5090 batches several
+# vision requests without breaking a sweat; 3 keeps latency per page sane
+# while roughly tripling document throughput.
+OCR_CONCURRENCY = max(1, int(os.environ.get("OCR_CONCURRENCY", "3")))
 
 LOCK = threading.Lock()
 STATE = {
@@ -55,6 +64,7 @@ STATE = {
     "history": [],     # [{name, when, pages, secs, chars, links:{md,xlsx}, errors}]
 }
 _pending_paths = []    # Path objects matching STATE["queue"]
+_retry_after = {}      # path str -> epoch; failed files wait this long before requeue
 
 
 def log(msg):
@@ -187,6 +197,27 @@ def export_txt(page_htmls: list) -> str:
 
 # ---------------------------------------------------------------- job worker
 
+class _Cancelled(Exception):
+    pass
+
+
+def count_pages(path: Path) -> int:
+    kind = filetype.guess(str(path))
+    if kind and kind.extension == "pdf":
+        doc = pdfium.PdfDocument(str(path))
+        try:
+            return len(doc)
+        finally:
+            doc.close()
+    return 1
+
+
+def load_page(path: Path, i: int):
+    """Load ONE page image. chandra's page_range is 0-indexed. Keeps memory
+    at O(workers) instead of O(pages) — a 279-page scanner dump stays flat."""
+    return load_file(str(path), {"page_range": str(i)})[0]
+
+
 def process_file(src: Path, inbox: Path) -> None:
     processed = inbox / "Processed"
     processed.mkdir(exist_ok=True)
@@ -214,29 +245,74 @@ def process_file(src: Path, inbox: Path) -> None:
     page_htmls = []
     page_mds = []
     try:
-        images = load_file(str(src), {})
-        job["total"] = len(images)
+        # preflight: a dead OCR server should fail the job in seconds with a
+        # clear message, not grind a per-page timeout for every page
+        try:
+            import urllib.request
+            urllib.request.urlopen(f"{grm_ocr.API_BASE}/models", timeout=8)
+        except Exception:
+            raise RuntimeError(
+                f"OCR server unreachable ({grm_ocr.API_BASE}). "
+                "The document was left in the inbox and will retry when the server is back."
+            )
+
+        n_pages = count_pages(src)
+        job["total"] = n_pages
         job["pages"] = [
             {"n": i + 1, "file": src.name, "state": "pending", "secs": None, "chars": None}
-            for i in range(len(images))
+            for i in range(n_pages)
         ]
-        job["state"] = "rendering"
-        for i, img in enumerate(images):
-            disp = img
-            if img.width > DISPLAY_WIDTH:
-                disp = img.resize((DISPLAY_WIDTH, int(img.height * DISPLAY_WIDTH / img.width)))
-            disp.convert("RGB").save(job_dir / f"page_{i + 1}.jpg", quality=82)
-
         job["state"] = "ocr"
-        for i, img in enumerate(images):
+        page_mds = [""] * n_pages
+        page_htmls = [""] * n_pages
+
+        def refresh_current():
+            """Live pane follows the earliest page still being read."""
+            for p in job["pages"]:
+                if p["state"] == "working":
+                    if job["current"] != p["n"]:
+                        job["current"] = p["n"]
+                        job["partial"] = ""
+                    return
+            job["current"] = job["done"]
+
+        def do_page(i):
             page = job["pages"][i]
+            if job.get("cancel"):
+                page["state"] = "skipped"
+                with LOCK:
+                    job["done"] += 1
+                return
+            try:
+                img = load_page(src, i)
+            except Exception as e:
+                page["state"] = "error"
+                page["error"] = f"could not load page: {e}"[:300]
+                with LOCK:
+                    job["done"] += 1
+                    refresh_current()
+                return
+            # display JPEG just-in-time — the first beam appears in seconds,
+            # not after a long doc has fully pre-rendered
+            try:
+                disp = img
+                if img.width > DISPLAY_WIDTH:
+                    disp = img.resize((DISPLAY_WIDTH, int(img.height * DISPLAY_WIDTH / img.width)))
+                disp.convert("RGB").save(job_dir / f"page_{i + 1}.jpg", quality=82)
+            except Exception as e:
+                log(f"page {i + 1} render failed: {e}")
             page["state"] = "working"
-            job["current"] = i + 1
-            job["partial"] = ""
+            with LOCK:
+                refresh_current()
             t0 = time.time()
             last = [0.0]
 
             def on_delta(raw_so_far):
+                if job.get("cancel"):
+                    raise _Cancelled()
+                # only the followed page pays the parse cost
+                if job["current"] != i + 1:
+                    return
                 now = time.time()
                 if now - last[0] < 0.4:
                     return
@@ -249,7 +325,8 @@ def process_file(src: Path, inbox: Path) -> None:
                     md = BeautifulSoup(
                         grm_ocr.normalize_raw(raw_so_far), "html.parser"
                     ).get_text("\n")
-                job["partial"] = md
+                if job["current"] == i + 1:
+                    job["partial"] = md
 
             try:
                 raw = grm_ocr.ocr_page_raw(img, on_delta=on_delta)
@@ -257,20 +334,27 @@ def process_file(src: Path, inbox: Path) -> None:
                 html = grm_ocr.raw_to_html(raw)
                 (job_dir / f"page_{i + 1}.md").write_text(md, encoding="utf-8")
                 (job_dir / f"page_{i + 1}.html").write_text(html, encoding="utf-8")
-                page_mds.append(md)
-                page_htmls.append(html)
+                page_mds[i] = md
+                page_htmls[i] = html
                 page["state"] = "done"
                 page["secs"] = round(time.time() - t0, 1)
                 page["chars"] = len(md)
-                job["done"] += 1
+            except _Cancelled:
+                page["state"] = "skipped"
+                page["secs"] = round(time.time() - t0, 1)
             except Exception as e:
                 page["state"] = "error"
                 page["secs"] = round(time.time() - t0, 1)
                 page["error"] = str(e)[:300]
-                page_mds.append("")
-                page_htmls.append("")
-            job["partial"] = ""
+            with LOCK:
+                job["done"] += 1
+                refresh_current()
 
+        with ThreadPoolExecutor(max_workers=OCR_CONCURRENCY) as pool:
+            list(pool.map(do_page, range(n_pages)))
+        job["partial"] = ""
+
+        cancelled = bool(job.get("cancel"))
         # outputs: readable text + excel, into Processed and the job dir (UI links)
         stem = src.stem
         txt_out = unique_path(processed, f"{stem}.txt")
@@ -285,8 +369,13 @@ def process_file(src: Path, inbox: Path) -> None:
         if xlsx_out:
             shutil.copy(xlsx_out, job_dir / xlsx_out.name)
 
-        # move the original out of the inbox so it never reprocesses
-        dest = unique_path(processed, src.name)
+        # move the original out of the inbox so it never reprocesses;
+        # cancelled originals go to OnHold instead of Processed
+        dest_dir = processed
+        if cancelled:
+            dest_dir = inbox / "OnHold"
+            dest_dir.mkdir(exist_ok=True)
+        dest = unique_path(dest_dir, src.name)
         for _ in range(10):
             try:
                 shutil.move(str(src), str(dest))
@@ -294,8 +383,8 @@ def process_file(src: Path, inbox: Path) -> None:
             except OSError:
                 time.sleep(0.5)
 
-        errors = sum(1 for p in job["pages"] if p["state"] != "done")
-        job["state"] = "finished"
+        errors = sum(1 for p in job["pages"] if p["state"] not in ("done", "skipped"))
+        job["state"] = "cancelled" if cancelled else "finished"
         entry = {
             "id": job_id,
             "name": src.name,
@@ -323,6 +412,7 @@ def process_file(src: Path, inbox: Path) -> None:
     except Exception as e:
         job["state"] = "failed"
         job["error"] = str(e)[:500]
+        _retry_after[str(src)] = time.time() + 300  # retry failed files in 5 min
         log(f"FAILED: {src.name}: {e}")
     finally:
         time.sleep(2)  # let the UI show the finished state before clearing
@@ -352,6 +442,8 @@ def watcher(inbox: Path):
         try:
             for p in sorted(inbox.iterdir()):
                 if p.is_dir() or p.suffix.lower() not in SUPPORTED:
+                    continue
+                if _retry_after.get(str(p), 0) > time.time():
                     continue
                 with LOCK:
                     queued = any(q == p for q in _pending_paths) or (
@@ -393,11 +485,14 @@ class Handler(SimpleHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         if path == "/api/state":
             with LOCK:
-                snap = {
-                    "queue": list(STATE["queue"]),
-                    "job": dict(STATE["job"]) if STATE["job"] else None,
+                # deep copy under the lock — the worker threads mutate the
+                # job dict continuously; a shallow dict() hands the JSON
+                # encoder live-mutating page lists
+                snap = copy.deepcopy({
+                    "queue": STATE["queue"],
+                    "job": STATE["job"],
                     "history": STATE["history"][:30],
-                }
+                })
             if snap["job"]:
                 snap["job"]["base"] = f"/jobs/{snap['job']['id']}"
             return self._json(snap)
@@ -422,7 +517,12 @@ class Handler(SimpleHTTPRequestHandler):
         data = p.read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", ctype)
-        self.send_header("Cache-Control", "no-store")
+        # job assets are write-once — let the browser cache them so flipping
+        # between page chips doesn't refetch 300KB JPEGs
+        if "jobs" in str(p) and p.suffix.lower() in (".jpg", ".html"):
+            self.send_header("Cache-Control", "public, max-age=86400, immutable")
+        else:
+            self.send_header("Cache-Control", "no-store")
         if p.suffix.lower() in (".xlsx", ".md", ".txt") and "jobs" in str(p):
             self.send_header(
                 "Content-Disposition", f'attachment; filename="{p.name}"'
@@ -433,6 +533,14 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urllib.parse.urlparse(self.path)
+        if path.path == "/api/cancel":
+            with LOCK:
+                job = STATE["job"]
+                if job and job["state"] not in ("finished", "failed", "cancelled"):
+                    job["cancel"] = True
+                    log(f"cancel requested: {job['name']}")
+                    return self._json({"ok": True})
+            return self._json({"ok": False, "error": "no active job"}, 409)
         if path.path != "/api/upload":
             return self._json({"error": "not found"}, 404)
         qs = urllib.parse.parse_qs(path.query)

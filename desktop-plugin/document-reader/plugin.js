@@ -1,7 +1,7 @@
 /**
  * Bearden Document Reader — Hermes desktop plugin.
  *
- * Native page over the firm OCR service (ocr_service.py on your gateway box :8899):
+ * Native page over the firm OCR service (ocr_service.py on YOUR-SERVER:8899):
  * live side-by-side view of the page being scanned and what GRM reads,
  * upload, queue, and finished-file downloads. Same backend as the staff
  * web page; this is the in-app skin.
@@ -156,6 +156,15 @@ function Reader() {
     jsx('div', { style: S.meter, children: jsx('div', { style: { ...S.fill, width: job?.total ? `${(100 * job.done) / job.total}%` : '0%' } }) }),
     jsx('button', { style: { ...S.btn, background: 'var(--ui-accent)', color: 'var(--theme-primary-foreground, #fff)' }, type: 'button',
       onClick: () => fileRef.current?.click(), children: 'Scan a document' }),
+    job && ['loading', 'rendering', 'ocr'].includes(job.state)
+      ? jsx('button', { style: { ...S.btn, color: 'var(--ui-text-secondary)' }, type: 'button',
+          onClick: async () => {
+            if (!window.confirm('Stop reading this document?')) return
+            await fetch(`${base}/api/cancel`, { method: 'POST' })
+            host.notify({ kind: 'info', message: 'Stopping the current scan' })
+          },
+          children: 'Stop this scan' })
+      : null,
     jsx('button', { style: S.btn, type: 'button', onClick: () => setShowHist(v => !v), children: 'Finished files' }),
     jsx('input', { ref: fileRef, type: 'file', multiple: true, style: { display: 'none' },
       accept: '.pdf,.png,.jpg,.jpeg,.tiff,.bmp',
@@ -280,7 +289,7 @@ function Reader() {
 export default {
   id: ID,
   name: 'Document Reader',
-  defaultEnabled: false, // inventories in Settings → Plugins; enable in Settings → Plugins
+  defaultEnabled: false, // inventories in Settings → Plugins; Jeff flips it on
   register(ctx) {
     ctx.i18n.register({
       en: {
