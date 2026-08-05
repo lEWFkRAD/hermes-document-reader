@@ -27,6 +27,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import sys
 import threading
 import time
@@ -201,21 +202,30 @@ class _Cancelled(Exception):
     pass
 
 
+# PDFium is NOT thread-safe — concurrent page rendering from worker threads
+# dies with a native access violation (exit 255, no traceback). Serialize
+# every pdfium touch; page rasterization is ~100ms, so the lock is cheap
+# next to the multi-second OCR calls it feeds.
+_PDFIUM_LOCK = threading.Lock()
+
+
 def count_pages(path: Path) -> int:
     kind = filetype.guess(str(path))
     if kind and kind.extension == "pdf":
-        doc = pdfium.PdfDocument(str(path))
-        try:
-            return len(doc)
-        finally:
-            doc.close()
+        with _PDFIUM_LOCK:
+            doc = pdfium.PdfDocument(str(path))
+            try:
+                return len(doc)
+            finally:
+                doc.close()
     return 1
 
 
 def load_page(path: Path, i: int):
     """Load ONE page image. chandra's page_range is 0-indexed. Keeps memory
     at O(workers) instead of O(pages) — a 279-page scanner dump stays flat."""
-    return load_file(str(path), {"page_range": str(i)})[0]
+    with _PDFIUM_LOCK:
+        return load_file(str(path), {"page_range": str(i)})[0]
 
 
 def process_file(src: Path, inbox: Path) -> None:
@@ -563,6 +573,29 @@ class Handler(SimpleHTTPRequestHandler):
         return self._json({"ok": True, "name": dest.name})
 
 
+class DualStackHTTPServer(ThreadingHTTPServer):
+    """Listen on [::] with IPV6_V6ONLY off so both ::1 and 127.0.0.1 work."""
+
+    address_family = socket.AF_INET6
+
+    def server_bind(self):
+        try:
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        except OSError:
+            pass
+        super().server_bind()
+
+
+def build_server(bind, port):
+    # Wildcard binds go dual-stack so localhost tabs that resolve ::1 still connect.
+    if bind in ("0.0.0.0", "", "::"):
+        try:
+            return DualStackHTTPServer(("::", port), Handler)
+        except OSError:
+            log("dual-stack bind failed, falling back to IPv4-only")
+    return ThreadingHTTPServer((bind, port), Handler)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8899)
@@ -579,7 +612,7 @@ def main():
     threading.Thread(target=watcher, args=(inbox,), daemon=True).start()
     threading.Thread(target=worker, args=(inbox,), daemon=True).start()
 
-    server = ThreadingHTTPServer((args.bind, args.port), Handler)
+    server = build_server(args.bind, args.port)
     server.inbox = inbox
     log(f"Bearden OCR service on http://{args.bind}:{args.port}/  inbox={inbox}")
     server.serve_forever()
