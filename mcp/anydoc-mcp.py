@@ -29,7 +29,9 @@ import anydoc
 
 from mcp.server.fastmcp import FastMCP
 
-sys.path.insert(0, str(Path(__file__).parent))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+ENGINE_DIR = PROJECT_ROOT / "engine"
+sys.path.insert(0, str(ENGINE_DIR if ENGINE_DIR.is_dir() else Path(__file__).resolve().parent))
 import grm_ocr  # shared GRM client: thinking disabled, fence/body normalization
 
 mcp = FastMCP("anydoc-mcp")

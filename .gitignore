@@ -3,3 +3,5 @@ __pycache__/
 jobs/
 service/jobs/
 *.log
+.pytest_cache/
+tests/__pycache__/

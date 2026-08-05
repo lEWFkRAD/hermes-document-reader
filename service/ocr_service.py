@@ -29,6 +29,7 @@ import re
 import shutil
 import socket
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -39,7 +40,9 @@ from pathlib import Path
 from bs4 import BeautifulSoup
 from openpyxl import Workbook
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+ENGINE_DIR = PROJECT_ROOT / "engine"
+sys.path.insert(0, str(ENGINE_DIR if ENGINE_DIR.is_dir() else PROJECT_ROOT))
 
 import filetype
 import pypdfium2 as pdfium
@@ -89,6 +92,25 @@ def save_history():
 def sanitize_name(name: str) -> str:
     name = Path(name).name
     return re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name).strip() or "upload.pdf"
+
+
+def sanitize_ocr_html(html: str) -> str:
+    """Remove executable content before OCR output is rendered in a browser."""
+    soup = BeautifulSoup(html or "", "html.parser")
+    for tag in soup.find_all(["script", "style", "iframe", "object", "embed", "link", "meta"]):
+        tag.decompose()
+    for tag in soup.find_all(True):
+        for attr in list(tag.attrs):
+            key = attr.lower()
+            value = tag.attrs.get(attr)
+            if key.startswith("on") or key in {"srcdoc", "formaction"}:
+                del tag.attrs[attr]
+                continue
+            if key in {"href", "src", "action"}:
+                rendered = " ".join(value) if isinstance(value, list) else str(value or "")
+                if rendered.lstrip().lower().startswith(("javascript:", "vbscript:", "data:text/html")):
+                    del tag.attrs[attr]
+    return str(soup)
 
 
 def unique_path(directory: Path, name: str) -> Path:
@@ -341,7 +363,7 @@ def process_file(src: Path, inbox: Path) -> None:
             try:
                 raw = grm_ocr.ocr_page_raw(img, on_delta=on_delta)
                 md = grm_ocr.raw_to_markdown(raw)
-                html = grm_ocr.raw_to_html(raw)
+                html = sanitize_ocr_html(grm_ocr.raw_to_html(raw))
                 (job_dir / f"page_{i + 1}.md").write_text(md, encoding="utf-8")
                 (job_dir / f"page_{i + 1}.html").write_text(html, encoding="utf-8")
                 page_mds[i] = md
@@ -491,8 +513,29 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def end_headers(self):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+        super().end_headers()
+
+    def _same_origin(self) -> bool:
+        """Reject browser cross-site mutations while allowing CLI/no-Origin clients."""
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True
+        if origin == "null":
+            return True  # local desktop/file renderer
+        parsed = urllib.parse.urlparse(origin)
+        if parsed.scheme in {"app", "hermes"} or parsed.hostname in {"localhost", "127.0.0.1", "::1"}:
+            return True
+        origin_host = parsed.netloc.lower()
+        request_host = self.headers.get("Host", "").lower()
+        return bool(origin_host and origin_host == request_host)
+
     def do_GET(self):
-        path = urllib.parse.urlparse(self.path).path
+        path = urllib.parse.unquote(urllib.parse.urlparse(self.path).path)
         if path == "/api/state":
             with LOCK:
                 # deep copy under the lock — the worker threads mutate the
@@ -510,7 +553,7 @@ class Handler(SimpleHTTPRequestHandler):
             return self._file(VIEWER_DIR / "firm.html", "text/html")
         if path.startswith("/jobs/"):
             target = (JOBS_DIR / path[len("/jobs/"):]).resolve()
-            if not str(target).startswith(str(JOBS_DIR.resolve())):
+            if not target.is_relative_to(JOBS_DIR.resolve()):
                 return self._json({"error": "bad path"}, 400)
             ctype = {
                 ".jpg": "image/jpeg", ".md": "text/markdown; charset=utf-8",
@@ -522,9 +565,11 @@ class Handler(SimpleHTTPRequestHandler):
         return self._json({"error": "not found"}, 404)
 
     def _file(self, p: Path, ctype: str):
-        if not p.exists():
+        if not p.is_file():
             return self._json({"error": "not found"}, 404)
         data = p.read_bytes()
+        if p.suffix.lower() == ".html" and p.is_relative_to(JOBS_DIR.resolve()):
+            data = sanitize_ocr_html(data.decode("utf-8", errors="replace")).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         # job assets are write-once — let the browser cache them so flipping
@@ -543,6 +588,8 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         path = urllib.parse.urlparse(self.path)
+        if not self._same_origin():
+            return self._json({"error": "cross-site request rejected"}, 403)
         if path.path == "/api/cancel":
             with LOCK:
                 job = STATE["job"]
@@ -560,15 +607,40 @@ class Handler(SimpleHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         if length <= 0 or length > 500 * 1024 * 1024:
             return self._json({"error": "bad size"}, 400)
+        # Reserve the final name, but stream into an unsupported temporary
+        # suffix so the inbox watcher can never enqueue a partial upload.
         dest = unique_path(self.server.inbox, name)
-        with open(dest, "wb") as f:
-            remaining = length
-            while remaining > 0:
-                chunk = self.rfile.read(min(65536, remaining))
-                if not chunk:
-                    break
-                f.write(chunk)
-                remaining -= len(chunk)
+        while True:
+            try:
+                reservation = os.open(dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(reservation)
+                break
+            except FileExistsError:
+                dest = unique_path(self.server.inbox, name)
+        temp_path = None
+        remaining = length
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb", dir=self.server.inbox, prefix=".upload-", suffix=".uploading", delete=False
+            ) as f:
+                temp_path = Path(f.name)
+                while remaining > 0:
+                    chunk = self.rfile.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    remaining -= len(chunk)
+                f.flush()
+                os.fsync(f.fileno())
+            if remaining:
+                return self._json({"error": "incomplete upload"}, 400)
+            os.replace(temp_path, dest)
+            temp_path = None
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
+            if remaining:
+                dest.unlink(missing_ok=True)
         log(f"uploaded: {dest.name}")
         return self._json({"ok": True, "name": dest.name})
 

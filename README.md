@@ -65,6 +65,18 @@ This project is glue; the heavy lifting is done by:
 Versions in production at time of writing: chandra 0.2.0, firecrawl-anydoc 0.1.2,
 openai 2.24.0, mcp 1.28.1, openpyxl 3.1.5, beautifulsoup4 4.15.0, Python 3.11/3.14.
 
+## Development checks
+
+Create a Python 3.11 environment, install `requirements.txt` plus `pytest`, then run:
+
+```powershell
+python -m pytest -q
+python -m py_compile engine/grm_ocr.py service/ocr_service.py viewer/viewer.py mcp/anydoc-mcp.py
+node --check desktop-plugin/document-reader/plugin.js
+```
+
+The HTTP tests use only temporary folders and a loopback server; they do not call the OCR model.
+
 ## License
 
 MIT — see [LICENSE](LICENSE). The dependencies above keep their own licenses.

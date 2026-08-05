@@ -22,7 +22,9 @@ import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+ENGINE_DIR = PROJECT_ROOT / "engine"
+sys.path.insert(0, str(ENGINE_DIR if ENGINE_DIR.is_dir() else PROJECT_ROOT))
 
 from bs4 import BeautifulSoup
 from chandra.input import load_file
