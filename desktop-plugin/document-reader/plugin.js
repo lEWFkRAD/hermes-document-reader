@@ -67,16 +67,67 @@ const S = {
 }
 
 const BEAM_CSS = `
-@keyframes docreader-sweep { 0% { top: -80px; } 55% { top: calc(100% - 20px); } 100% { top: -80px; } }
-.docreader-beam { position: absolute; left: 0; right: 0; height: 80px; top: 0; pointer-events: none; z-index: 3;
-  background: linear-gradient(180deg, rgba(255,190,90,0) 0%, rgba(255,190,90,0.10) 35%, rgba(255,190,90,0.35) 50%, rgba(255,190,90,0.10) 65%, rgba(255,190,90,0) 100%);
-  mix-blend-mode: screen; animation: docreader-sweep 2.2s linear infinite; }
-.docreader-beam::after { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 1.5px;
-  background: rgba(255,244,214,0.9); box-shadow: 0 0 10px 2px rgba(255,205,110,0.55); }
+@keyframes docreader-sweep { 0% { top: -112px; } 58% { top: calc(100% - 28px); } 100% { top: -112px; } }
+@keyframes docreader-region-in { from { opacity: 0; transform: scale(.985); } to { opacity: 1; transform: scale(1); } }
+@keyframes docreader-region-pulse { 50% { border-color: rgba(178,255,203,.96); box-shadow: 0 0 20px rgba(40,255,119,.38); } }
+.docreader-beam { position: absolute; left: 0; right: 0; height: 112px; top: 0; pointer-events: none; z-index: 4;
+  background: linear-gradient(180deg, rgba(35,255,126,0) 0%, rgba(35,255,126,.025) 24%, rgba(35,255,126,.16) 47%, rgba(112,255,168,.34) 50%, rgba(35,255,126,.10) 55%, rgba(35,255,126,0) 100%);
+  mix-blend-mode: screen; animation: docreader-sweep 2.65s cubic-bezier(.45,.02,.55,.98) infinite; }
+.docreader-beam::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 1.5px;
+  background: linear-gradient(90deg, transparent, #5dff9a 8%, #d3ffe3 50%, #5dff9a 92%, transparent);
+  box-shadow: 0 0 7px 2px rgba(48,255,124,.85), 0 0 24px 6px rgba(32,255,112,.42); }
+.docreader-regions { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 3; }
+.docreader-region { position: absolute; border: 1px solid rgba(63,255,135,.62); border-radius: 3px; background: rgba(43,255,116,.045);
+  box-shadow: 0 0 0 1px rgba(22,255,105,.08) inset, 0 0 12px rgba(31,255,112,.16); animation: docreader-region-in .32s ease-out both; }
+.docreader-region[data-kind="data"] { border-color: rgba(146,255,77,.9); background: rgba(123,255,62,.055); box-shadow: 0 0 18px rgba(102,255,72,.28); }
+.docreader-region[data-kind="section"] { border-color: rgba(56,255,178,.9); border-left-width: 3px; background: rgba(40,255,159,.07); }
+.docreader-region[data-kind="visual"] { border-style: dashed; border-color: rgba(73,255,209,.82); }
+.docreader-region.hot { animation: docreader-region-in .32s ease-out both, docreader-region-pulse 1.35s ease-in-out infinite; }
+.docreader-region-tag { position: absolute; left: -1px; top: -16px; padding: 2px 5px; border-radius: 2px 2px 0 0; background: rgba(5,24,14,.88);
+  color: rgba(129,255,177,.94); font: 600 8px/12px Consolas,monospace; letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; }
+.docreader-region[data-kind="text"] .docreader-region-tag { display: none; }
 @keyframes docreader-blink { to { opacity: 0; } }
 .docreader-caret { display: inline-block; width: 6px; height: 1em; vertical-align: text-bottom;
   background: var(--ui-accent); animation: docreader-blink 0.9s steps(2) infinite; }
 `
+
+function withSectionBands(regions) {
+  if (!regions.length || regions.some(r => r.kind === 'section')) return regions
+  const sorted = [...regions].sort((a, b) => a.y - b.y || a.x - b.x)
+  const groups = []
+  for (const r of sorted) {
+    let g = groups[groups.length - 1]
+    const gap = g ? r.y - g.bottom : Infinity
+    if (!g || gap > 4.5 || (r.y - g.top > 24 && gap > 1.4)) {
+      g = { left: r.x, right: r.x + r.w, top: r.y, bottom: r.y + r.h, count: 1 }
+      groups.push(g)
+    } else {
+      g.left = Math.min(g.left, r.x); g.right = Math.max(g.right, r.x + r.w)
+      g.bottom = Math.max(g.bottom, r.y + r.h); g.count++
+    }
+  }
+  const bands = groups.filter(g => g.count >= 2).slice(0, 6).map(g => ({
+    x: Math.max(0, g.left - 1.1), y: Math.max(0, g.top - 0.8),
+    w: Math.min(100, g.right + 1.1) - Math.max(0, g.left - 1.1),
+    h: Math.min(100, g.bottom + 0.8) - Math.max(0, g.top - 0.8),
+    kind: 'section', label: 'section',
+  }))
+  return [...bands, ...regions]
+}
+
+function RegionOverlay({ regions = [] }) {
+  const boxes = regions.filter(r => [r.x, r.y, r.w, r.h].every(Number.isFinite)).slice(-48)
+  const safe = withSectionBands(boxes)
+  return jsx('div', { className: 'docreader-regions', 'aria-hidden': true, children: safe.map((r, i) => {
+    const kind = ['text', 'data', 'section', 'visual'].includes(r.kind) ? r.kind : 'text'
+    return jsx('div', {
+      className: `docreader-region${i >= safe.length - 4 ? ' hot' : ''}`,
+      'data-kind': kind,
+      style: { left: `${r.x}%`, top: `${r.y}%`, width: `${r.w}%`, height: `${r.h}%` },
+      children: jsx('span', { className: 'docreader-region-tag', children: kind }),
+    }, `${i}:${r.x}:${r.y}:${r.w}:${r.h}`)
+  }) })
+}
 
 function useServiceState() {
   return useQuery({
@@ -147,6 +198,7 @@ function Reader() {
 
   const shown = selected ?? (job ? (job.state === 'finished' ? job.total : job.current || 1) : 0)
   const page = job?.pages?.[shown - 1]
+  const liveRegions = page?.state === 'working' && job?.region_page === shown ? (job.regions || []) : []
 
   const toolbar = jsxs('div', { style: S.bar, children: [
     jsx('span', { style: S.name, children: job ? (job.current_file || job.name) : 'Document Reader' }),
@@ -207,6 +259,7 @@ function Reader() {
   const left = job
     ? jsxs('div', { style: { position: 'relative' }, children: [
         jsx('img', { src: `${base}${job.base}/page_${shown}.jpg`, style: { width: '100%', display: 'block' }, alt: `page ${shown}` }),
+        jsx(RegionOverlay, { regions: liveRegions }),
         page?.state === 'working' ? jsx('div', { className: 'docreader-beam' }) : null,
       ] })
     : jsxs('div', { style: { ...S.empty, height: '100%' }, children: [

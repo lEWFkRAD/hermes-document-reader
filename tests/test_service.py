@@ -28,6 +28,30 @@ class ServiceHelpersTest(unittest.TestCase):
         self.assertNotIn('javascript:', clean)
         self.assertIn('src="page.jpg"', clean)
 
+    def test_extract_regions_maps_normalized_boxes_and_kinds(self):
+        raw = '''
+          <div data-label="Section-Header" data-bbox="100 50 900 120">Heading</div>
+          <div class="Text" data-bbox="125 150 500 260">Words</div>
+          <div class="Table" data-bbox="100 300 900 800"><table></table></div>
+          <div data-label="Text" data-bbox="bad box">ignored</div>
+        '''
+        regions = service.extract_regions(raw)
+        self.assertEqual([r['kind'] for r in regions], ['section', 'text', 'data'])
+        self.assertEqual(regions[0], {
+            'x': 10.0, 'y': 5.0, 'w': 80.0, 'h': 7.0,
+            'kind': 'section', 'label': 'Section-Header',
+        })
+
+    def test_extract_regions_retains_structural_boxes_at_live_limit(self):
+        blocks = ['<div data-label="Section-Header" data-bbox="0 0 1000 30">H</div>']
+        blocks.extend(
+            f'<div data-label="Text" data-bbox="0 {i} 1000 {i + 1}">T</div>'
+            for i in range(1, 61)
+        )
+        regions = service.extract_regions(''.join(blocks), limit=10)
+        self.assertEqual(len(regions), 10)
+        self.assertEqual(regions[0]['kind'], 'section')
+
 
 class HttpHandlerTest(unittest.TestCase):
     def setUp(self):

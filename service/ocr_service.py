@@ -113,6 +113,51 @@ def sanitize_ocr_html(html: str) -> str:
     return str(soup)
 
 
+def extract_regions(raw: str, limit: int = 48) -> list:
+    """Extract normalized layout boxes from GRM's streamed HTML response."""
+    soup = BeautifulSoup(raw or "", "html.parser")
+    regions = []
+    for tag in soup.find_all(attrs={"data-bbox": True}):
+        try:
+            x0, y0, x1, y1 = (float(v) for v in tag["data-bbox"].split())
+        except (TypeError, ValueError):
+            continue
+        x0, y0 = max(0.0, min(1000.0, x0)), max(0.0, min(1000.0, y0))
+        x1, y1 = max(0.0, min(1000.0, x1)), max(0.0, min(1000.0, y1))
+        if x1 <= x0 or y1 <= y0:
+            continue
+        label = str(tag.get("data-label") or (tag.get("class") or [tag.name])[0])
+        label_key = label.lower()
+        if "table" in label_key or "form" in label_key:
+            kind = "data"
+        elif "header" in label_key or "section" in label_key:
+            kind = "section"
+        elif label_key in {"image", "figure", "diagram", "complex-block"}:
+            kind = "visual"
+        else:
+            kind = "text"
+        regions.append({
+            "x": round(x0 / 10, 2),
+            "y": round(y0 / 10, 2),
+            "w": round((x1 - x0) / 10, 2),
+            "h": round((y1 - y0) / 10, 2),
+            "kind": kind,
+            "label": label[:32],
+        })
+    if len(regions) <= limit:
+        return regions
+    # Keep section/table/form boxes even after a text-heavy page exceeds the
+    # live payload cap, then fill the remaining slots with the newest text.
+    keep = {i for i, region in enumerate(regions) if region["kind"] != "text"}
+    if len(keep) > limit:
+        keep = set(sorted(keep)[-limit:])
+    for i in range(len(regions) - 1, -1, -1):
+        if len(keep) >= limit:
+            break
+        keep.add(i)
+    return [region for i, region in enumerate(regions) if i in keep]
+
+
 def unique_path(directory: Path, name: str) -> Path:
     p = directory / name
     stem, suffix = p.stem, p.suffix
@@ -268,6 +313,8 @@ def process_file(src: Path, inbox: Path) -> None:
         "started": time.time(),
         "pages": [],
         "partial": "",
+        "regions": [],
+        "region_page": 0,
         "error": None,
     }
     with LOCK:
@@ -305,6 +352,8 @@ def process_file(src: Path, inbox: Path) -> None:
                     if job["current"] != p["n"]:
                         job["current"] = p["n"]
                         job["partial"] = ""
+                        job["regions"] = []
+                        job["region_page"] = p["n"]
                     return
             job["current"] = job["done"]
 
@@ -358,7 +407,12 @@ def process_file(src: Path, inbox: Path) -> None:
                         grm_ocr.normalize_raw(raw_so_far), "html.parser"
                     ).get_text("\n")
                 if job["current"] == i + 1:
-                    job["partial"] = md
+                    regions = extract_regions(raw_so_far)
+                    with LOCK:
+                        if job["current"] == i + 1:
+                            job["partial"] = md
+                            job["regions"] = regions
+                            job["region_page"] = i + 1
 
             try:
                 raw = grm_ocr.ocr_page_raw(img, on_delta=on_delta)
@@ -371,6 +425,11 @@ def process_file(src: Path, inbox: Path) -> None:
                 page["state"] = "done"
                 page["secs"] = round(time.time() - t0, 1)
                 page["chars"] = len(md)
+                regions = extract_regions(raw)
+                with LOCK:
+                    if job["current"] == i + 1:
+                        job["regions"] = regions
+                        job["region_page"] = i + 1
             except _Cancelled:
                 page["state"] = "skipped"
                 page["secs"] = round(time.time() - t0, 1)

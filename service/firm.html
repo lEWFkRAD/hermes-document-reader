@@ -84,7 +84,7 @@
     padding: 6px 16px; font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase;
     color: var(--ui-text-quaternary); border-bottom: 1px solid var(--ui-stroke-tertiary);
   }
-  #pageImg { width: 100%; display: block; }
+  #pageImg { width: 100%; display: block; transition: filter 0.2s; }
   #ocrOut { padding: 16px 20px; line-height: 1.55; font-size: 0.9rem; color: var(--ui-text-primary); }
   #ocrOut table { border-collapse: collapse; margin: 10px 0; width: 100%; }
   #ocrOut th, #ocrOut td { border: 1px solid var(--ui-stroke-tertiary); padding: 5px 9px; font-size: 0.85rem; }
@@ -93,23 +93,54 @@
   #ocrOut p { margin: 6px 0; }
   .waiting { color: var(--ui-text-quaternary); padding: 30px; text-align: center; }
   #imgWrap { position: relative; }
+  #regionLayer { position: absolute; inset: 0; pointer-events: none; overflow: hidden; z-index: 3; }
+  .scan-region {
+    position: absolute; border: 1px solid rgb(63 255 135 / 0.62); border-radius: 3px;
+    background: linear-gradient(135deg, rgb(43 255 116 / 0.05), rgb(43 255 116 / 0.015));
+    box-shadow: 0 0 0 1px rgb(22 255 105 / 0.08) inset, 0 0 12px rgb(31 255 112 / 0.16);
+    animation: region-lock 0.32s ease-out both;
+  }
+  .scan-region[data-kind="data"] {
+    border-color: rgb(146 255 77 / 0.9); background: rgb(123 255 62 / 0.055);
+    box-shadow: 0 0 0 1px rgb(132 255 70 / 0.18) inset, 0 0 18px rgb(102 255 72 / 0.28);
+  }
+  .scan-region[data-kind="section"] {
+    border-color: rgb(56 255 178 / 0.9); border-left-width: 3px; background: rgb(40 255 159 / 0.07);
+    box-shadow: 0 0 16px rgb(32 255 145 / 0.24);
+  }
+  .scan-region[data-kind="visual"] { border-style: dashed; border-color: rgb(73 255 209 / 0.82); }
+  .scan-region.hot { animation: region-lock 0.32s ease-out both, region-pulse 1.35s ease-in-out infinite; }
+  .region-tag {
+    position: absolute; left: -1px; top: -16px; padding: 2px 5px; border-radius: 2px 2px 0 0;
+    background: rgb(5 24 14 / 0.88); color: rgb(129 255 177 / 0.94);
+    font: 600 8px/12px Consolas, monospace; letter-spacing: 0.08em; text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .scan-region[data-kind="text"] .region-tag { display: none; }
   #scanBar {
-    display: none; position: absolute; left: 0; right: 0; height: 80px;
-    top: 0; pointer-events: none; z-index: 3; will-change: top;
+    display: none; position: absolute; left: 0; right: 0; height: 112px;
+    top: 0; pointer-events: none; z-index: 4; will-change: top;
     background: linear-gradient(180deg,
-      rgb(var(--warm) / 0) 0%, rgb(var(--warm) / 0.10) 35%,
-      rgb(var(--warm) / 0.35) 50%, rgb(var(--warm) / 0.10) 65%, rgb(var(--warm) / 0) 100%);
+      rgb(35 255 126 / 0) 0%, rgb(35 255 126 / 0.025) 24%,
+      rgb(35 255 126 / 0.16) 47%, rgb(112 255 168 / 0.34) 50%,
+      rgb(35 255 126 / 0.10) 55%, rgb(35 255 126 / 0) 100%);
     mix-blend-mode: multiply;
   }
   @media (prefers-color-scheme: dark) { #scanBar { mix-blend-mode: screen; } }
-  #scanBar::after {
+  #scanBar::before {
     content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 1.5px;
-    background: rgb(var(--warm) / 0.9);
-    box-shadow: 0 0 10px 2px rgb(var(--warm) / 0.55);
+    background: linear-gradient(90deg, transparent, #5dff9a 8%, #d3ffe3 50%, #5dff9a 92%, transparent);
+    box-shadow: 0 0 7px 2px rgb(48 255 124 / 0.85), 0 0 24px 6px rgb(32 255 112 / 0.42);
   }
-  #imgWrap.scanning #scanBar { display: block; animation: sweep 2.2s linear infinite; }
-  @keyframes sweep { 0% { top: -80px; } 55% { top: calc(100% - 20px); } 100% { top: -80px; } }
-  @media (prefers-reduced-motion: reduce) { #imgWrap.scanning #scanBar { animation-duration: 6s; } }
+  #imgWrap.scanning #scanBar { display: block; animation: sweep 2.65s cubic-bezier(.45,.02,.55,.98) infinite; }
+  #imgWrap.scanning #pageImg { filter: saturate(0.88) contrast(1.035) brightness(0.98); }
+  @keyframes sweep { 0% { top: -112px; } 58% { top: calc(100% - 28px); } 100% { top: -112px; } }
+  @keyframes region-lock { from { opacity: 0; transform: scale(0.985); } to { opacity: 1; transform: scale(1); } }
+  @keyframes region-pulse { 50% { border-color: rgb(178 255 203 / 0.95); box-shadow: 0 0 20px rgb(40 255 119 / 0.38); } }
+  @media (prefers-reduced-motion: reduce) {
+    #imgWrap.scanning #scanBar { animation-duration: 7s; }
+    .scan-region, .scan-region.hot { animation: none; }
+  }
   #livePre {
     margin: 0; padding: 16px 20px; white-space: pre-wrap; word-break: break-word;
     font-family: Consolas, monospace; font-size: 0.82rem; line-height: 1.5; color: var(--ui-text-secondary);
@@ -173,7 +204,8 @@
       <div class="pane-label">Scanned page <span id="metaLeft"></span></div>
       <div id="imgWrap">
         <img id="pageImg" alt="" style="display:none">
-        <div id="scanBar"></div>
+        <div id="regionLayer" aria-hidden="true"></div>
+        <div id="scanBar" aria-hidden="true"></div>
       </div>
       <div class="waiting" id="imgWait" style="display:none">waiting for pages…</div>
       <div id="idle">
@@ -193,9 +225,65 @@
   <div id="historyPanel"><h2>Finished files</h2><div id="histList"></div></div>
 <script>
 let selected = null, shown = 0, shownState = null, lastState = {}, partialLen = 0, finalShown = 0;
-let lastHistHtml = '', prefetchedJob = null;
+let lastHistHtml = '', prefetchedJob = null, regionSignature = '';
 function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 const $ = id => document.getElementById(id);
+
+function regionKind(label) {
+  const v = String(label || '').toLowerCase();
+  if (v.includes('table') || v.includes('form')) return 'data';
+  if (v.includes('header') || v.includes('section')) return 'section';
+  if (['image','figure','diagram','complex-block'].includes(v)) return 'visual';
+  return 'text';
+}
+function regionsFromHtml(html) {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  return [...doc.querySelectorAll('[data-bbox]')].map(el => {
+    const b = (el.getAttribute('data-bbox') || '').trim().split(/\s+/).map(Number);
+    if (b.length !== 4 || b.some(v => !Number.isFinite(v))) return null;
+    const [x0,y0,x1,y1] = b.map(v => Math.max(0, Math.min(1000, v)));
+    if (x1 <= x0 || y1 <= y0) return null;
+    const label = el.getAttribute('data-label') || el.classList[0] || el.tagName;
+    return { x:x0/10, y:y0/10, w:(x1-x0)/10, h:(y1-y0)/10, kind:regionKind(label), label };
+  }).filter(Boolean).slice(-48);
+}
+function withSectionBands(regions) {
+  if (!regions.length || regions.some(r => r.kind === 'section')) return regions;
+  const sorted = [...regions].sort((a,b) => a.y - b.y || a.x - b.x);
+  const groups = [];
+  for (const r of sorted) {
+    let g = groups[groups.length - 1];
+    const gap = g ? r.y - g.bottom : Infinity;
+    if (!g || gap > 4.5 || (r.y - g.top > 24 && gap > 1.4)) {
+      g = { left:r.x, right:r.x+r.w, top:r.y, bottom:r.y+r.h, count:1 };
+      groups.push(g);
+    } else {
+      g.left = Math.min(g.left, r.x); g.right = Math.max(g.right, r.x + r.w);
+      g.bottom = Math.max(g.bottom, r.y + r.h); g.count++;
+    }
+  }
+  const bands = groups.filter(g => g.count >= 2).slice(0, 6).map(g => ({
+    x:Math.max(0,g.left-1.1), y:Math.max(0,g.top-0.8),
+    w:Math.min(100,g.right+1.1)-Math.max(0,g.left-1.1),
+    h:Math.min(100,g.bottom+0.8)-Math.max(0,g.top-0.8),
+    kind:'section', label:'section',
+  }));
+  return [...bands, ...regions];
+}
+function paintRegions(regions) {
+  const boxes = (regions || []).filter(r => [r.x,r.y,r.w,r.h].every(Number.isFinite)).slice(-48);
+  const safe = withSectionBands(boxes);
+  const sig = JSON.stringify(safe);
+  if (sig === regionSignature) return;
+  regionSignature = sig;
+  $('regionLayer').innerHTML = safe.map((r, i) => {
+    const kind = ['text','data','section','visual'].includes(r.kind) ? r.kind : 'text';
+    const hot = i >= safe.length - 4 ? ' hot' : '';
+    const label = kind === 'data' ? 'data' : kind === 'section' ? 'section' : kind === 'visual' ? 'visual' : 'text';
+    return `<div class="scan-region${hot}" data-kind="${kind}" style="left:${r.x}%;top:${r.y}%;width:${r.w}%;height:${r.h}%"><span class="region-tag">${label}</span></div>`;
+  }).join('');
+}
+function clearRegions() { paintRegions([]); }
 
 function prefetchPages(job) {
   if (!job || prefetchedJob === job.id + ':' + job.total) return;
@@ -236,6 +324,7 @@ async function refresh() {
     $('progressText').textContent = '';
     $('progressBar').style.width = '0%';
     $('pageStrip').innerHTML = '';
+    clearRegions();
     shown = 0; shownState = null; finalShown = 0;
     return;
   }
@@ -271,6 +360,7 @@ async function refresh() {
   const p = (job.pages || [])[shown - 1] || {};
   $('imgWrap').classList.toggle('scanning', p.state === 'working');
   if (p.state === 'working') {
+    paintRegions(job.region_page === shown ? (job.regions || []) : []);
     const text = job.partial || '';
     const out = $('ocrOut');
     if (!text) {
@@ -297,7 +387,8 @@ function updateMeta(job) {
     : p.state === 'error' ? `— p.${shown} · problem` : `— p.${shown}`;
 }
 async function show(n) {
-  if (n !== shown) { partialLen = 0; }
+  const pageChanged = n !== shown;
+  if (pageChanged) { partialLen = 0; clearRegions(); }
   shown = n;
   const job = lastState.job; if (!job) return;
   const base = job.base;
@@ -311,12 +402,16 @@ async function show(n) {
   $('imgWrap').classList.toggle('scanning', p.state === 'working');
   if (p.state === 'done') {
     if (finalShown === n) { updateMeta(job); return; }
-    try { out.innerHTML = await (await fetch(`${base}/page_${n}.html`)).text(); finalShown = n; }
+    try {
+      const html = await (await fetch(`${base}/page_${n}.html`)).text();
+      out.innerHTML = html; paintRegions(regionsFromHtml(html)); finalShown = n;
+    }
     catch { out.innerHTML = '<div class="waiting">could not load output</div>'; }
   } else if (p.state === 'error') {
     out.innerHTML = `<div class="waiting">this page could not be read: ${esc(p.error || '')}</div>`;
   } else if (p.state === 'working') {
     if (!out.querySelector('#livePre')) out.innerHTML = '<pre id="livePre"><span class="caret"></span></pre>';
+    paintRegions(job.region_page === n ? (job.regions || []) : []);
   } else {
     out.innerHTML = '<div class="waiting">not read yet</div>';
   }

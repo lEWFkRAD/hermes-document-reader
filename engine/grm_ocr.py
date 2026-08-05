@@ -16,6 +16,7 @@ Used by:
 import base64
 import io
 import os
+import re
 
 from bs4 import BeautifulSoup
 from openai import OpenAI
@@ -83,6 +84,25 @@ def _stream_once(b64: str, on_delta, temperature: float, top_p: float):
     return "".join(parts), False
 
 
+_IMG_MD = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+
+
+def _mostly_images(raw: str) -> bool:
+    """True when the page parsed to little besides image placeholders.
+
+    GRM occasionally classifies a form-dense page (e.g. four W-2 copies) as
+    Figure regions and reads nothing — a nondeterministic miss worth a retry.
+    Pages that legitimately are pure images just burn the retries and keep
+    the last answer.
+    """
+    try:
+        md = raw_to_markdown(raw)
+    except Exception:
+        return False
+    text = _IMG_MD.sub("", md).strip()
+    return len(md) > 0 and len(text) < 120
+
+
 def ocr_page_raw(image, on_delta=None, max_retries: int = 3) -> str:
     """OCR one PIL page image. Returns chandra-format raw output.
 
@@ -103,7 +123,7 @@ def ocr_page_raw(image, on_delta=None, max_retries: int = 3) -> str:
         raw, aborted = _stream_once(b64, on_delta, temperature, top_p)
         bad = aborted or detect_repeat_token(raw) or (
             len(raw) > 50 and detect_repeat_token(raw, cut_from_end=50)
-        )
+        ) or _mostly_images(raw)
         if not bad or attempt == max_retries:
             break
         temperature = min(0.2 * (attempt + 1), 0.8)
