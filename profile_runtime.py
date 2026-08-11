@@ -703,25 +703,99 @@ def _current_windows_sid() -> str:
 def _harden_windows_secret_acl(path: Path) -> None:
     if os.name != "nt":
         return
+    try:
+        before = path.lstat()
+    except OSError as exc:
+        raise ProfileRuntimeError(
+            "could not inspect the Windows service token before restricting its ACL"
+        ) from exc
+    if _is_link_or_reparse(path) or not stat.S_ISREG(before.st_mode):
+        raise ProfileRuntimeError("Windows service token is not a regular file")
     user_sid = _current_windows_sid()
-    command = [
-        "icacls.exe",
-        str(path),
-        "/inheritance:r",
-        "/grant:r",
-        f"*{user_sid}:(R,W)",
-        "*S-1-5-18:(F)",
-    ]
-    result = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        timeout=15,
-        check=False,
+    try:
+        encoded_path = base64.b64encode(
+            str(path).encode("utf-8", errors="strict")
+        ).decode("ascii")
+    except UnicodeEncodeError as exc:
+        raise ProfileRuntimeError("Windows ACL path cannot be encoded safely") from exc
+    if len(encoded_path) > MAX_WINDOWS_ACL_ARGUMENT_CHARS:
+        raise ProfileRuntimeError("Windows ACL path is too long to restrict safely")
+    script = (
+        "& { param([string]$EncodedPath,[string]$UserSid) "
+        "$ErrorActionPreference='Stop'; "
+        "$utf8=[Text.UTF8Encoding]::new($false,$true); "
+        "$LiteralPath=$utf8.GetString("
+        "[Convert]::FromBase64String($EncodedPath)); "
+        "$user=[Security.Principal.SecurityIdentifier]::new($UserSid); "
+        "$system=[Security.Principal.SecurityIdentifier]::new('S-1-5-18'); "
+        "$noneInheritance="
+        "[System.Security.AccessControl.InheritanceFlags]::None; "
+        "$nonePropagation="
+        "[System.Security.AccessControl.PropagationFlags]::None; "
+        "$allow=[System.Security.AccessControl.AccessControlType]::Allow; "
+        "$security=[System.Security.AccessControl.FileSecurity]::new(); "
+        "$security.SetAccessRuleProtection($true,$false); "
+        "$userRule=[System.Security.AccessControl.FileSystemAccessRule]::new("
+        "$user,[System.Security.AccessControl.FileSystemRights]"
+        f"{WINDOWS_USER_ACL_MASK},$noneInheritance,$nonePropagation,$allow); "
+        "$systemRule=[System.Security.AccessControl.FileSystemAccessRule]::new("
+        "$system,[System.Security.AccessControl.FileSystemRights]"
+        f"{WINDOWS_SYSTEM_ACL_MASK},$noneInheritance,$nonePropagation,$allow); "
+        "[void]$security.AddAccessRule($userRule); "
+        "[void]$security.AddAccessRule($systemRule); "
+        "[System.IO.File]::SetAccessControl($LiteralPath,$security) }"
     )
+    try:
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                script,
+                encoded_path,
+                user_sid,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ProfileRuntimeError(
+            "could not restrict the Windows ACL on the service token"
+        ) from exc
     if result.returncode != 0:
         raise ProfileRuntimeError("could not restrict the Windows ACL on the service token")
+    try:
+        hardened = path.lstat()
+    except OSError as exc:
+        raise ProfileRuntimeError(
+            "could not re-attest the Windows service token after restricting its ACL"
+        ) from exc
+    if (
+        _is_link_or_reparse(path)
+        or not stat.S_ISREG(hardened.st_mode)
+        or not os.path.samestat(before, hardened)
+    ):
+        raise ProfileRuntimeError(
+            "Windows service token identity changed while its ACL was restricted"
+        )
     _validate_windows_secret_acl(path)
+    try:
+        validated = path.lstat()
+    except OSError as exc:
+        raise ProfileRuntimeError(
+            "could not re-attest the Windows service token after validating its ACL"
+        ) from exc
+    if (
+        _is_link_or_reparse(path)
+        or not stat.S_ISREG(validated.st_mode)
+        or not os.path.samestat(hardened, validated)
+    ):
+        raise ProfileRuntimeError(
+            "Windows service token identity changed while its ACL was validated"
+        )
 
 
 def _validate_windows_secret_acl(path: Path) -> None:
@@ -738,7 +812,8 @@ def _validate_windows_secret_acl(path: Path) -> None:
         raise ProfileRuntimeError("Windows ACL path is too long to validate safely")
     script = (
         "& { param([string]$EncodedPath) $ErrorActionPreference='Stop'; "
-        "$LiteralPath=[Text.Encoding]::UTF8.GetString("
+        "$utf8=[Text.UTF8Encoding]::new($false,$true); "
+        "$LiteralPath=$utf8.GetString("
         "[Convert]::FromBase64String($EncodedPath)); "
         "$security=[System.IO.File]::GetAccessControl($LiteralPath,"
         "[System.Security.AccessControl.AccessControlSections]::Access); "

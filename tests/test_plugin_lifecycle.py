@@ -1152,13 +1152,20 @@ def test_service_token_creation_rejects_foreign_acl_postcondition(monkeypatch, t
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows ACL hardening contract")
-def test_windows_acl_hardener_uses_icacls_then_exact_postcondition(
+def test_windows_acl_hardener_uses_dotnet_setter_then_exact_postcondition(
     monkeypatch, tmp_path
 ):
-    path = (tmp_path / "Profile Ω" / "engine token").resolve()
+    path = (
+        tmp_path
+        / "Hermes Profiles \u03a9 \U0001f600 ;&$()[]%"
+        / "engine token \u00e9.token"
+    ).resolve()
+    path.parent.mkdir()
+    path.write_text("profile-secret-value\n", encoding="utf-8")
     sid = "S-1-5-21-100-200-300-400"
     commands = []
     validated = []
+    parent_environment = dict(os.environ)
 
     def record_run(command, **kwargs):
         commands.append((list(command), kwargs))
@@ -1174,21 +1181,38 @@ def test_windows_acl_hardener_uses_icacls_then_exact_postcondition(
 
     NATIVE_WINDOWS_ACL_HARDENER(path)
 
-    assert commands[0][0] == [
-        "icacls.exe",
-        str(path),
-        "/inheritance:r",
-        "/grant:r",
-        f"*{sid}:(R,W)",
-        "*S-1-5-18:(F)",
+    command, kwargs = commands[0]
+    assert command[:4] == [
+        "powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
     ]
-    assert commands[0][1] == {
+    script = command[4]
+    assert "icacls" not in script.lower()
+    assert "set-acl" not in script.lower()
+    assert "get-acl" not in script.lower()
+    assert "convertto-json" not in script.lower()
+    assert "foreach-object" not in script.lower()
+    assert "[Text.UTF8Encoding]::new($false,$true)" in script
+    assert "[System.Security.AccessControl.FileSecurity]::new()" in script
+    assert "$security.SetAccessRuleProtection($true,$false)" in script
+    assert "[System.Security.AccessControl.InheritanceFlags]::None" in script
+    assert "[System.Security.AccessControl.PropagationFlags]::None" in script
+    assert script.count("FileSystemAccessRule]::new") == 2
+    assert "[System.IO.File]::SetAccessControl" in script
+    assert str(profile_runtime.WINDOWS_USER_ACL_MASK) in script
+    assert str(profile_runtime.WINDOWS_SYSTEM_ACL_MASK) in script
+    assert base64.b64decode(command[-2]).decode("utf-8") == str(path)
+    assert command[-1] == sid
+    assert kwargs == {
         "capture_output": True,
         "text": True,
         "timeout": 15,
         "check": False,
     }
     assert validated == [path]
+    assert dict(os.environ) == parent_environment
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows ACL validation contract")
@@ -1230,6 +1254,7 @@ def test_windows_acl_validator_base64_roundtrips_literal_path_without_env_mutati
     assert "get-acl" not in command[4].lower()
     assert "convertto-json" not in command[4].lower()
     assert "foreach-object" not in command[4].lower()
+    assert "[Text.UTF8Encoding]::new($false,$true)" in command[4]
     assert "[System.IO.File]::GetAccessControl" in command[4]
     assert "RawSecurityDescriptor" in command[4]
     assert "[Console]::Out.WriteLine" in command[4]
@@ -1340,13 +1365,13 @@ def test_windows_acl_validator_rejects_unsafe_path_transport_before_launch(
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows ACL hardening contract")
-def test_native_icacls_handles_unicode_path_and_rejects_explicit_foreign_ace(
+def test_native_dotnet_hardener_replaces_foreign_dacl_without_changing_file(
     monkeypatch, tmp_path
 ):
     path = (
         tmp_path
-        / "Hermes Profiles Ω 😀 ;&$()[]%"
-        / "engine token é.token"
+        / "Hermes Profiles \u03a9 \U0001f600 ;&$()[]%"
+        / "engine token \u00e9.token"
     ).resolve()
     path.parent.mkdir()
     path.write_text("profile-secret-value\n", encoding="utf-8")
@@ -1356,27 +1381,88 @@ def test_native_icacls_handles_unicode_path_and_rejects_explicit_foreign_ace(
         NATIVE_WINDOWS_ACL_VALIDATOR,
     )
 
-    try:
-        NATIVE_WINDOWS_ACL_HARDENER(path)
-        NATIVE_WINDOWS_ACL_VALIDATOR(path)
+    def owner_and_group(selected):
+        encoded = base64.b64encode(str(selected).encode("utf-8")).decode("ascii")
+        script = (
+            "& { param([string]$EncodedPath) $ErrorActionPreference='Stop'; "
+            "$utf8=[Text.UTF8Encoding]::new($false,$true); "
+            "$LiteralPath=$utf8.GetString("
+            "[Convert]::FromBase64String($EncodedPath)); "
+            "$sections=[System.Security.AccessControl.AccessControlSections]::Owner "
+            "-bor [System.Security.AccessControl.AccessControlSections]::Group; "
+            "$security=[System.IO.File]::GetAccessControl($LiteralPath,$sections); "
+            "$owner=$security.GetOwner("
+            "[Security.Principal.SecurityIdentifier]); "
+            "$group=$security.GetGroup("
+            "[Security.Principal.SecurityIdentifier]); "
+            "$ownerValue=''; if($null -ne $owner){$ownerValue=$owner.Value}; "
+            "$groupValue=''; if($null -ne $group){$groupValue=$group.Value}; "
+            "[Console]::Out.WriteLine($ownerValue); "
+            "[Console]::Out.WriteLine($groupValue) }"
+        )
         result = subprocess.run(
-            ["icacls.exe", str(path), "/grant", "*S-1-5-32-545:(R)"],
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                script,
+                encoded,
+            ],
             capture_output=True,
             text=True,
             timeout=15,
             check=False,
         )
         assert result.returncode == 0
-        with pytest.raises(
-            profile_runtime.ProfileRuntimeError,
-            match="foreign or inherited principal",
-        ):
-            NATIVE_WINDOWS_ACL_HARDENER(path)
+        values = result.stdout.encode("ascii", errors="strict").decode(
+            "ascii"
+        ).splitlines()
+        assert len(values) == 2
+        return tuple(values)
+
+    try:
+        user_sid = profile_runtime._current_windows_sid()
+        grant = subprocess.run(
+            [
+                "icacls.exe",
+                str(path),
+                "/inheritance:r",
+                "/grant:r",
+                f"*{user_sid}:(R,W)",
+                "*S-1-5-18:(F)",
+                "*S-1-5-32-544:(F)",
+                "*S-1-5-32-545:(R)",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        assert grant.returncode == 0
+        deny = subprocess.run(
+            ["icacls.exe", str(path), "/deny", "*S-1-5-32-546:(R)"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        assert deny.returncode == 0
+        before_info = path.lstat()
+        before_content = path.read_bytes()
+        before_owner_group = owner_and_group(path)
         with pytest.raises(
             profile_runtime.ProfileRuntimeError,
             match="foreign or inherited principal",
         ):
             NATIVE_WINDOWS_ACL_VALIDATOR(path)
+
+        NATIVE_WINDOWS_ACL_HARDENER(path)
+        NATIVE_WINDOWS_ACL_VALIDATOR(path)
+
+        assert path.read_bytes() == before_content
+        assert os.path.samestat(before_info, path.lstat())
+        assert owner_and_group(path) == before_owner_group
     finally:
         path.unlink(missing_ok=True)
 
