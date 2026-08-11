@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-Live OCR viewer — watch Chandra + GRM (forge 5090) work through a scanned PDF
-page by page, with the page image and its OCR output side by side.
+Source-only live viewer for the configured OCR endpoint. It processes a
+scanned PDF page by page with the image and recognized text side by side.
 
 Usage (Hermes venv python):
   python viewer.py "D:\\path\\to\\scanned.pdf" [--port 8899]
 
-Serves a local UI at http://localhost:<port>/ and OCRs one page at a time,
+Developer-only source diagnostic; it is not part of the supported/installable
+plugin surface. Serves a local UI at http://localhost:<port>/ and OCRs one page at a time,
 writing page_<n>.jpg / page_<n>.md / page_<n>.html plus status.json into a
 per-job folder. The UI polls status.json and follows the job live.
-Tailnet/local only — binds 127.0.0.1.
+Binds 127.0.0.1, which does not by itself provide production authentication.
 """
 
 import argparse
@@ -32,8 +33,21 @@ from chandra.input import load_file
 import grm_ocr  # shared GRM client: thinking disabled, streaming, fence normalization
 
 VIEWER_DIR = Path(__file__).parent
-JOBS_DIR = VIEWER_DIR / "jobs"
 DISPLAY_WIDTH = 1100  # px, for the browser-side page image
+
+
+def default_data_root() -> Path:
+    configured = os.environ.get("DOCUMENT_READER_DATA_ROOT", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    home = os.environ.get("HERMES_HOME", "").strip()
+    if home:
+        return Path(home).expanduser() / "document-reader" / "data"
+    if os.name == "nt":
+        local = os.environ.get("LOCALAPPDATA", "").strip()
+        base = Path(local) if local else Path.home() / "AppData" / "Local"
+        return base / "hermes" / "document-reader" / "data"
+    return Path.home() / ".hermes" / "document-reader" / "data"
 
 
 def run_job(pdf_paths: list, job_dir: Path) -> None:
@@ -43,7 +57,7 @@ def run_job(pdf_paths: list, job_dir: Path) -> None:
         else f"{len(pdf_paths)} files: " + ", ".join(p.name for p in pdf_paths)
     )
     status = {
-        "files": [str(p) for p in pdf_paths],
+        "files": [p.name for p in pdf_paths],
         "name": label,
         "current_file": "",
         "state": "loading",
@@ -128,17 +142,17 @@ def run_job(pdf_paths: list, job_dir: Path) -> None:
             try:
                 raw = grm_ocr.ocr_page_raw(img, on_delta=on_delta)
                 md = grm_ocr.raw_to_markdown(raw)
-                html = grm_ocr.raw_to_html(raw)
+                html = grm_ocr.sanitize_ocr_html(grm_ocr.raw_to_html(raw))
                 (job_dir / f"page_{i + 1}.md").write_text(md, encoding="utf-8")
                 (job_dir / f"page_{i + 1}.html").write_text(html, encoding="utf-8")
                 page["state"] = "done"
                 page["secs"] = round(time.time() - t0, 1)
                 page["chars"] = len(md)
                 status["done"] += 1
-            except Exception as e:  # keep going on per-page failures
+            except Exception:  # keep going on per-page failures
                 page["state"] = "error"
                 page["secs"] = round(time.time() - t0, 1)
-                page["error"] = str(e)[:300]
+                page["error"] = "OCR processing failed"
             finally:
                 for _ in range(5):  # HTTP thread may briefly hold the file open
                     try:
@@ -160,9 +174,9 @@ def run_job(pdf_paths: list, job_dir: Path) -> None:
         status["state"] = "finished"
         status["finished"] = time.time()
         save_status()
-    except Exception as e:
+    except Exception:
         status["state"] = "failed"
-        status["error"] = str(e)[:500]
+        status["error"] = "OCR processing failed"
         save_status()
         raise
 
@@ -170,6 +184,15 @@ def run_job(pdf_paths: list, job_dir: Path) -> None:
 class JobHandler(SimpleHTTPRequestHandler):
     def end_headers(self):
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; "
+            "frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+        )
         super().end_headers()
 
     def log_message(self, *args):
@@ -180,6 +203,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("pdfs", nargs="+", help="Absolute path(s) to scanned PDFs (or images)")
     ap.add_argument("--port", type=int, default=8899)
+    ap.add_argument("--data-root", type=Path, default=None)
     args = ap.parse_args()
 
     pdf_paths = [Path(p) for p in args.pdfs]
@@ -187,7 +211,12 @@ def main():
         if not p.is_absolute() or not p.exists():
             sys.exit(f"File must exist and be absolute: {p}")
 
-    job_dir = JOBS_DIR / time.strftime("%Y%m%d-%H%M%S")
+    data_root = (args.data_root or default_data_root()).expanduser().resolve()
+    if data_root == PROJECT_ROOT.resolve() or data_root.is_relative_to(PROJECT_ROOT.resolve()):
+        sys.exit("Viewer data root must be outside the source/install tree")
+    jobs_dir = data_root / "viewer-jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    job_dir = jobs_dir / (time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(4).hex())
     job_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy(VIEWER_DIR / "index.html", job_dir / "index.html")
 

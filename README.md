@@ -1,82 +1,186 @@
 # Hermes Document Reader
 
-Watched-folder OCR for an accounting firm, with a live "watch it read" UI.
-Drop a scanned PDF in a folder (or on a web page, or into the Hermes desktop
-app) and watch the page image on the left while the model's reading streams
-into the right pane — then collect an Excel workbook (one sheet per table,
-numbers as numbers) and a clean text file next to the original.
+Hermes Document Reader is a Windows-only Hermes plugin for profile-scoped
+watched-folder OCR. It adds a Hermes Desktop reader, a HUD attachment action,
+and an owned background service for each selected Hermes profile.
 
-Built on the Bearden/Onyx stack: CPU-only gateway box runs the service;
-vision OCR runs on a vLLM server (RTX 5090) serving GRM.
+The service listens only on loopback. Documents, previews, exports, and history
+stay under the selected profile, but page images are sent to the
+OpenAI-compatible OCR endpoint configured for that profile. Choose and secure
+that endpoint according to your document-handling requirements.
 
-## Components
+> **Status:** `0.1.0` is Unreleased. No versioned GitHub Release has been
+> published yet. The installation commands below install the current `main`
+> branch for testing.
 
-| Path | What it is |
-|---|---|
-| `engine/grm_ocr.py` | Shared OCR client: streams pages to GRM over vLLM with thinking disabled, normalizes the model's output wrapper, detects mid-stream repetition loops and retries with a temperature bump. Uses chandra's prompts/parsers. |
-| `service/ocr_service.py` | The firm service: watches an inbox folder, queues jobs, serves the live web UI + JSON state on the LAN, exports `.xlsx` (duplicate form copies deduplicated) and readable `.txt`. All live state in memory — no status files (Windows lock races). |
-| `service/firm.html` | Staff web UI (Hermes desktop design language: flat, token-driven, light/dark). Drag-drop upload, live side-by-side view with a scanning beam, streaming output, job history with downloads. |
-| `desktop-plugin/document-reader/plugin.js` | Hermes desktop plugin (plain-ESM, plugin SDK). Native page with sidebar nav + ⌘K command, drag-drop, image prefetch, history with copy-able native output paths. Opt-in (`defaultEnabled: false`). |
-| `viewer/viewer.py` + `viewer/index.html` | Single-shot viewer for ad-hoc jobs: `viewer.py file1.pdf [file2.pdf ...] --port 8899`. |
-| `mcp/anydoc-mcp.py` | MCP server (FastMCP, stdio) exposing `convert_document` / `convert_with_ocr` to agents. Text-based formats convert locally via anydoc; scanned PDFs go through the GRM engine. |
+## Requirements
 
-## Hard-won gotchas (why the engine looks the way it does)
+- Hermes Agent 0.20.0 or newer
+- 64-bit Windows
+- Hermes running on 64-bit CPython 3.11 or 3.14
+- Git, for `hermes plugins install` and `hermes plugins update`
+- An OpenAI-compatible multimodal OCR endpoint, model identifier, and API token
 
-1. **Reasoner burn** — GRM is a thinking model. Without
-   `extra_body={"chat_template_kwargs": {"enable_thinking": false}}` it spends
-   its whole token budget reasoning and returns empty output.
-2. **Output wrapper** — GRM wraps answers in a ```` ```html ```` fence plus an
-   `<html><body>` shell; chandra's parser expects bare top-level divs and
-   silently returns empty. `normalize_raw()` strips both.
-3. **Repetition loops** — multi-copy tax forms (a page of four identical W-2
-   copies) send greedy decoding into a loop. The engine detects repetition
-   mid-stream, aborts the request, and retries hotter (chandra's own policy).
-4. **Windows file locks** — an HTTP thread serving a file blocks `os.replace`
-   / `unlink` on it. The service keeps all live state in memory and serves it
-   as JSON; the one remaining disk artifact set (page images/html) is
-   write-once.
+HTTPS is required for the OCR endpoint unless you deliberately pass
+`--allow-insecure-http`. Do not use plaintext HTTP for a non-loopback endpoint.
 
-## Deployment (reference)
+## Install for a profile
 
-- Service: gateway box, `venv\Scripts\python.exe -u service/ocr_service.py --port 8899`
-  (auto-start via a `schtasks` onstart task). Inbox `D:\OCR-Inbox`, shared on the LAN.
-- Plugin: copy `desktop-plugin/document-reader/` into `<hermes home>\desktop-plugins\`,
-  enable in Settings → Plugins.
-- MCP: register `mcp/anydoc-mcp.py` under `mcp_servers` in the Hermes `config.yaml`,
-  command pointing at a venv python that has the `mcp` SDK and chandra installed.
-- The engine expects a vLLM endpoint serving a multimodal model; set the
-  endpoint/model constants at the top of `engine/grm_ocr.py`.
-
-## Credits / dependencies
-
-This project is glue; the heavy lifting is done by:
-
-| Dependency | Role | License |
-|---|---|---|
-| [chandra](https://github.com/datalab-to/chandra) (datalab-to) | OCR prompts, page loading, layout parsing, repeat-token detection | Apache-2.0 (separate model license for chandra-ocr weights) |
-| [firecrawl-anydoc](https://github.com/firecrawl/anydoc) | Rust document→Markdown conversion (Word/Excel/ODF/RTF/EPUB/CSV/PDF) | MIT |
-| GRM (`grm-2.6-plus-0628`) served by [vLLM](https://github.com/vllm-project/vllm) | Vision model doing the actual reading | model license per its distributor; vLLM Apache-2.0 |
-| [openai-python](https://github.com/openai/openai-python) | OpenAI-compatible streaming client for vLLM | Apache-2.0 |
-| [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) (`mcp`, FastMCP) | Agent-facing tool server | MIT |
-| [openpyxl](https://openpyxl.readthedocs.io/) | Excel workbook export | MIT |
-| [Beautiful Soup 4](https://www.crummy.com/software/BeautifulSoup/) | HTML parsing for exports and normalization | MIT |
-| [Hermes](https://github.com/NousResearch) plugin SDK & desktop design system | The native app surface this plugs into | per Hermes |
-
-Versions in production at time of writing: chandra 0.2.0, firecrawl-anydoc 0.1.2,
-openai 2.24.0, mcp 1.28.1, openpyxl 3.1.5, beautifulsoup4 4.15.0, Python 3.11/3.14.
-
-## Development checks
-
-Create a Python 3.11 environment, install `requirements.txt` plus `pytest`, then run:
+Run every command with the same profile selector. This example installs the
+plugin for a profile named `work`:
 
 ```powershell
-python -m pytest -q
-python -m py_compile engine/grm_ocr.py service/ocr_service.py viewer/viewer.py mcp/anydoc-mcp.py
-node --check desktop-plugin/document-reader/plugin.js
+hermes -p work plugins install lEWFkRAD/hermes-document-reader --enable
+hermes -p work document-reader configure --api-base https://ocr.example.com/v1 --model model-id
+hermes -p work document-reader install
+hermes -p work document-reader status
+hermes -p work gateway restart
 ```
 
-The HTTP tests use only temporary folders and a loopback server; they do not call the OCR model.
+The `configure` command prompts for the API token without placing it in shell
+history or process arguments. Omit `-p work` for the default profile. Repeat
+the complete sequence for every additional profile that should run Document
+Reader.
+
+After the first lifecycle installation, enable the Document Reader entry in
+Hermes Desktop if it is disabled, then reload Desktop plugins. Do not run
+`service/install-autostart.ps1`, `service/ocr_service.py`, or a hand-written
+scheduled task; those paths bypass the supported ownership checks.
+
+## Use Document Reader
+
+- Open **Document Reader** from the Desktop sidebar or command palette.
+- Drag files onto the reader or choose **Scan documents**.
+- In the HUD composer, choose **Scan with Document Reader**. The action queues
+  the selected files to the current profile and inserts only a count marker,
+  such as `[Document Reader queued 2 files]`, into the composer. It does not
+  attach document names or source files to the chat message.
+- To use the watched folder, place documents in
+  `<selected HERMES_HOME>\document-reader\data\inbox`.
+
+The supported service inputs are PDF, PNG, JPEG, TIFF, and BMP. Each document
+must be between 1 byte and 100 MiB. Desktop and HUD intake accept at most ten
+files per action.
+
+The reader shows live page previews and recognized text. A completed export
+includes a readable `.txt` file and, when workbook generation succeeds, an
+`.xlsx` workbook with a Text sheet plus one sheet per unique nontrivial table.
+Duplicate table copies are omitted.
+
+## Profile ownership and storage
+
+Hermes resolves the selected `HERMES_HOME` at command and request time. That
+path is already the profile root; do not append another `profiles\<name>`
+segment. Each profile receives an independent loopback port, service token,
+engine token, limited current-user scheduled task, immutable runtime, Desktop
+receipt, and data tree.
+
+Runtime state lives beneath `<selected HERMES_HOME>\document-reader`:
+
+| Path | Purpose |
+| --- | --- |
+| `config` | Private service and OCR endpoint configuration and tokens |
+| `runtime` | Owned immutable service releases and runtime lock |
+| `install` | Deployment receipts, lifecycle journal, and rollback backups |
+| `data\inbox` | Watched input documents |
+| `data\processed` | Completed exports and successfully processed source documents |
+| `data\on-hold` | Source documents from cancelled jobs |
+| `data\needs-review` | Source documents with page-level OCR failures |
+| `data\quarantine` | Repeated failures or documents that fail integrity checks |
+| `data\jobs` | Bounded preview and download cache |
+| `data\state` | Bounded job history |
+| `data\logs` | Local service log |
+
+The preview/download cache is bounded by age, count, and total size. Completed
+files in `data\processed` are not part of that cache-retention cleanup.
+
+## Update, recover, rollback, and uninstall
+
+Apply a plugin source update to one profile with:
+
+```powershell
+hermes -p work plugins update document-reader
+hermes -p work document-reader install
+hermes -p work document-reader status
+```
+
+Rerun `document-reader install` after changing the endpoint, model, token, or
+CA bundle so the service restarts under the new configuration.
+
+- `document-reader status` verifies deployment receipts, the exact scheduled
+  task action, runtime ownership, and authenticated service health.
+- `document-reader recover` completes or rolls back an interrupted lifecycle
+  transaction. Use the same profile selector that reported the interruption.
+- `document-reader rollback` restores the immediately previous owned
+  deployment when one is available.
+- `document-reader uninstall` removes the owned scheduled task and Desktop
+  deployment while preserving configuration, releases, logs, documents, and
+  history. It does not remove the Git-installed plugin source.
+
+After lifecycle uninstall, use
+`hermes -p work plugins remove document-reader` only if the profile should also
+lose the installed plugin source. The retained
+`<selected HERMES_HOME>\document-reader` state is intentionally not deleted.
+
+### Copy a legacy inbox
+
+To migrate an older inbox without deleting or moving the source tree:
+
+```powershell
+hermes -p work document-reader install --legacy-inbox "C:\path\to\old-inbox"
+```
+
+The lifecycle copies and verifies supported legacy documents before publishing
+them into the selected profile. Legacy input documents use the same 100 MiB
+per-file processing limit as new service inputs. Existing legacy processed
+outputs are copied to the new processed tree. The source tree remains intact.
+
+## Security and privacy
+
+- The supported service binds to `127.0.0.1`; it is not a LAN or public web
+  service.
+- Every service request requires the selected profile's private token, and API
+  and job requests also require the expected owner identity.
+- Profile service and engine tokens are private files. Supported lifecycle
+  tasks do not receive credentials through environment variables or command
+  arguments.
+- Filenames and OCR output are visible in the authenticated local reader and
+  stored in the selected profile. HUD composer text contains only the queued
+  file count.
+- OCR page images are transmitted to the configured `api_base`. A local
+  loopback service does not imply that the OCR endpoint is local.
+
+See [SECURITY.md](SECURITY.md) for reporting and deployment boundaries.
+
+## Source-only developer tools
+
+The source tree contains two additional tools that are intentionally absent
+from the installable plugin archive and are not registered or provisioned by
+`document-reader install`:
+
+- `mcp/anydoc-mcp.py` provides guarded stdio MCP conversion tools. It accepts
+  absolute regular files only beneath the selected profile's inbox or
+  processed roots. `convert_document` converts supported formats locally.
+  `convert_with_ocr` may send page images to the profile endpoint only when the
+  profile was configured with `--allow-remote-mcp-ocr`.
+- `viewer/` is an unauthenticated, loopback-only, single-run developer
+  diagnostic. It is not a production or profile-authenticated service.
+
+Root `requirements.txt` supports source development and these source-only
+tools. The installable service ignores it and provisions exclusively from
+`install/service-requirements.txt` plus the matching fully hashed Windows lock.
+
+## Development and releases
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the test and audit workflow. See
+[RELEASING.md](RELEASING.md) for clean-tree archive, checksum, provenance, and
+tag requirements.
+
+The installed service uses chandra-ocr, pypdfium2, openai-python, httpx,
+openpyxl, Beautiful Soup, and filetype. Source-only conversion additionally
+uses firecrawl-anydoc and the MCP Python SDK. Dependency versions are pinned in
+the repository; each project and model keeps its own license terms.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). The dependencies above keep their own licenses.
+Hermes Document Reader is MIT licensed. See [LICENSE](LICENSE).

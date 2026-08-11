@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Bearden Document Reader</title>
+<title>Hermes Document Reader</title>
 <style>
   /* Hermes desktop design language, mirrored for a standalone page:
      flat not boxed, tokens not literals, text hierarchy by alpha,
@@ -46,6 +46,8 @@
     padding: 10px 20px; border-bottom: 1px solid var(--ui-stroke-tertiary);
   }
   header h1 { font-size: 0.95rem; font-weight: 600; color: var(--ui-text-primary); white-space: nowrap; }
+  #profileName, #uploadStatus { color: var(--ui-text-tertiary); font-size: 0.78rem; white-space: nowrap; }
+  #uploadStatus.error { color: var(--bad); }
   #fileName { color: var(--ui-text-secondary); font-size: 0.85rem; overflow: hidden; text-overflow: ellipsis; max-width: 30ch; white-space: nowrap; }
   #stateBadge { font-size: 0.75rem; font-weight: 600; color: var(--ui-text-tertiary); white-space: nowrap; text-transform: lowercase; }
   #stateBadge.finished { color: var(--ok); }
@@ -64,11 +66,27 @@
   .btn.primary { background: var(--accent); color: #fff; }
   .btn.primary:hover { filter: brightness(1.08); }
   label.follow { font-size: 0.8rem; color: var(--ui-text-tertiary); display: flex; align-items: center; gap: 5px; cursor: pointer; white-space: nowrap; }
-  #queueLine { padding: 4px 20px; font-size: 0.8rem; color: var(--ui-text-tertiary); border-bottom: 1px solid var(--ui-stroke-tertiary); display: none; }
+  #queueLine {
+    min-height: 29px; padding: 4px 20px; display: flex; align-items: center; gap: 8px;
+    font-size: 0.76rem; color: var(--ui-text-quaternary);
+    border-bottom: 1px solid var(--ui-stroke-tertiary); background: rgb(var(--base) / 0.018);
+    overflow: hidden;
+  }
+  #queueLine.busy { color: var(--ui-text-tertiary); background: rgb(var(--base) / 0.028); }
+  .queue-title { flex: none; font-size: 0.65rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ui-text-quaternary); }
+  .queue-status { flex: none; white-space: nowrap; }
+  .queue-files { display: flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; }
+  .queue-file {
+    max-width: 28ch; padding: 2px 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    border: 1px solid var(--ui-stroke-tertiary); border-radius: 999px; color: var(--ui-text-secondary);
+    background: var(--ui-bg-quaternary);
+  }
+  .queue-more { flex: none; white-space: nowrap; color: var(--ui-text-quaternary); }
   #pageStrip { display: flex; gap: 4px; padding: 8px 20px; overflow-x: auto; border-bottom: 1px solid var(--ui-stroke-tertiary); }
   .chip {
     min-width: 30px; text-align: center; padding: 3px 8px; border-radius: 4px;
     font-size: 0.78rem; cursor: pointer; color: var(--ui-text-quaternary);
+    font-family: inherit; border: 0; background: transparent;
     user-select: none; transition: background 0.1s, color 0.1s;
   }
   .chip:hover { background: var(--hover); }
@@ -186,18 +204,20 @@
 </head>
 <body>
   <header>
-    <h1>Bearden Document Reader</h1>
+    <h1>Hermes Document Reader</h1>
+    <span id="profileName">profile: …</span>
     <span id="fileName"></span>
     <span id="stateBadge">ready</span>
     <div class="progress-wrap"><div id="progressBar"></div></div>
     <span id="progressText"></span>
-    <button class="btn primary" id="uploadBtn">Scan a document</button>
+    <button class="btn primary" id="uploadBtn">Scan documents</button>
     <button class="btn" id="stopBtn" style="display:none;color:var(--bad)">Stop this scan</button>
     <button class="btn" id="historyBtn">Finished files</button>
+    <span id="uploadStatus" role="status" aria-live="polite"></span>
     <label class="follow"><input type="checkbox" id="follow" checked> follow</label>
     <input type="file" id="fileInput" multiple accept=".pdf,.png,.jpg,.jpeg,.tiff,.bmp" style="display:none">
   </header>
-  <div id="queueLine"></div>
+  <div id="queueLine"><span class="queue-title">Queue</span><span class="queue-status">clear</span></div>
   <div id="pageStrip"></div>
   <main>
     <div class="pane">
@@ -209,15 +229,15 @@
       </div>
       <div class="waiting" id="imgWait" style="display:none">waiting for pages…</div>
       <div id="idle">
-        <div class="big">Drop a scanned PDF anywhere on this page</div>
-        <div class="hint">or click <b>Scan a document</b> above,
-          or save the file into <code>M:\OCR-Inbox</code> (<code>\\YOUR-SERVER\M\OCR-Inbox</code>).<br><br>
-          You will watch it being read here. Finished Excel and text files appear in
-          <code>OCR-Inbox\Processed</code> and under <b>Finished files</b>.</div>
+        <div class="big">Drop a PDF or image anywhere on this page</div>
+        <div class="hint">or click <b>Scan documents</b> above,
+          or save the file into this profile's configured inbox.<br><br>
+          You will watch it being read here. Finished text and Excel files are
+          saved in this profile's processed folder and listed under <b>Finished files</b>.</div>
       </div>
     </div>
     <div class="pane">
-      <div class="pane-label">What the computer reads <span id="metaRight"></span></div>
+      <div class="pane-label">Recognized text <span id="metaRight"></span></div>
       <div id="ocrOut"><div class="waiting">nothing being read right now</div></div>
     </div>
   </main>
@@ -226,8 +246,41 @@
 <script>
 let selected = null, shown = 0, shownState = null, lastState = {}, partialLen = 0, finalShown = 0;
 let lastHistHtml = '', prefetchedJob = null, regionSignature = '';
-function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+const MAX_FILES = 10, MAX_FILE_BYTES = 100 * 1024 * 1024;
+const UPLOAD_TYPES = new Set(['pdf', 'png', 'jpg', 'jpeg', 'tiff', 'bmp']);
+const UPLOAD_MIME = {
+  pdf:'application/pdf', png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg',
+  tiff:'image/tiff', bmp:'image/bmp',
+};
+function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function attr(s) { return esc(s).replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+function safeJobLink(value) {
+  const link = String(value || '');
+  return /^\/jobs\/[A-Za-z0-9_-]{1,96}\/[A-Za-z0-9%._() -]{1,240}$/.test(link) ? link : '';
+}
 const $ = id => document.getElementById(id);
+const SAFE_OCR_TAGS = new Set([
+  'P','DIV','SPAN','BR','HR','H1','H2','H3','H4','H5','H6','STRONG','B','EM','I','U','S',
+  'SMALL','BLOCKQUOTE','PRE','CODE','UL','OL','LI','TABLE','THEAD','TBODY','TFOOT','TR',
+  'TH','TD','CAPTION','SUP','SUB',
+]);
+const DROP_OCR_TAGS = new Set([
+  'SCRIPT','STYLE','IFRAME','OBJECT','EMBED','LINK','META','BASE','FORM','INPUT','BUTTON',
+  'SELECT','OPTION','TEXTAREA','SVG','MATH','AUDIO','VIDEO','SOURCE','TRACK','CANVAS','TEMPLATE',
+]);
+function sanitizeOcrHtml(html) {
+  const doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
+  for (const node of [...doc.body.querySelectorAll('*')]) {
+    if (DROP_OCR_TAGS.has(node.tagName)) { node.remove(); continue; }
+    if (!SAFE_OCR_TAGS.has(node.tagName)) { node.replaceWith(...node.childNodes); continue; }
+    for (const attr of [...node.attributes]) {
+      const key = attr.name.toLowerCase();
+      const tableAttr = ['colspan','rowspan','scope'].includes(key) && ['TH','TD'].includes(node.tagName);
+      if (!['class','data-bbox','data-label'].includes(key) && !tableAttr) node.removeAttribute(attr.name);
+    }
+  }
+  return doc.body.innerHTML;
+}
 
 function regionKind(label) {
   const v = String(label || '').toLowerCase();
@@ -299,18 +352,24 @@ async function refresh() {
   let st;
   try { st = await (await fetch('/api/state')).json(); } catch { return; }
   lastState = st;
+  $('profileName').textContent = `profile: ${String(st.profile || 'unknown')}`;
   const job = st.job;
   const q = $('queueLine');
-  if (st.queue && st.queue.length) {
-    q.style.display = '';
-    q.textContent = 'Waiting in line: ' + st.queue.map(x => x.name).join('  ·  ');
-  } else q.style.display = 'none';
+  const waiting = st.queue || [];
+  const active = !!job && ['loading','rendering','ocr'].includes(job.state);
+  const status = active
+    ? `1 active · ${waiting.length} waiting`
+    : waiting.length ? `${waiting.length} waiting` : 'clear';
+  const visibleFiles = waiting.slice(0, 4);
+  q.classList.toggle('busy', active || waiting.length > 0);
+  q.innerHTML = `<span class="queue-title">Queue</span><span class="queue-status">${status}</span>` +
+    (visibleFiles.length ? `<span class="queue-files">${visibleFiles.map(x => `<span class="queue-file">${esc(String(x.name || ''))}</span>`).join('')}${waiting.length > visibleFiles.length ? `<span class="queue-more">+${waiting.length - visibleFiles.length} more</span>` : ''}</span>` : '');
   const h = $('histList');
   const histHtml = (st.history || []).map(e => `
     <div class="hist">
       <div class="n">${esc(e.name)}</div>
-      <div class="m">${e.when} · ${e.pages} pages · ${Math.round(e.secs)}s${e.errors ? ` · <span class="err">${e.errors} page(s) failed</span>` : ''}</div>
-      <div>${e.links.xlsx ? `<a href="${e.links.xlsx}">Excel</a>` : ''}<a href="${e.links.md}">Text</a></div>
+      <div class="m">${esc(e.when)} · ${Number(e.pages) || 0} pages · ${Math.round(Number(e.secs) || 0)}s${Number(e.errors) ? ` · <span class="err">${Number(e.errors)} page(s) failed</span>` : ''}</div>
+      <div>${safeJobLink(e.links?.xlsx) ? `<a href="${attr(safeJobLink(e.links.xlsx))}">Excel</a>` : ''}${safeJobLink(e.links?.md) ? `<a href="${attr(safeJobLink(e.links.md))}">Text</a>` : ''}</div>
     </div>`).join('') || '<div class="hist"><div class="m">nothing yet</div></div>';
   if (histHtml !== lastHistHtml) { lastHistHtml = histHtml; h.innerHTML = histHtml; }
   const badge = $('stateBadge');
@@ -331,17 +390,24 @@ async function refresh() {
   $('idle').style.display = 'none';
   $('fileName').textContent = job.current_file || job.name || '';
   $('stopBtn').style.display = ['loading','rendering','ocr'].includes(job.state) ? '' : 'none';
-  const labels = { loading: 'opening file', rendering: 'preparing pages', ocr: 'reading', finished: 'done', failed: 'problem', cancelled: 'stopped' };
+  const labels = {
+    loading:'opening file', rendering:'preparing pages', ocr:'recognizing text',
+    finished:'complete', finished_with_errors:'complete — review needed',
+    failed:'failed', cancelled:'stopped', quarantined:'quarantined',
+  };
   badge.textContent = labels[job.state] || job.state;
-  badge.className = job.state === 'finished' ? 'finished' : (job.state === 'failed' ? 'failed' : 'busy');
+  badge.className = job.state === 'finished' || job.state === 'cancelled'
+    ? 'finished'
+    : ['finished_with_errors','failed','quarantined'].includes(job.state) ? 'failed' : 'busy';
   $('progressText').textContent = job.total ? `page ${Math.min(job.current, job.total)} of ${job.total}` : '';
   $('progressBar').style.width = job.total ? (100 * job.done / job.total) + '%' : '0%';
   const strip = $('pageStrip');
   if (strip.children.length !== (job.pages || []).length) {
     strip.innerHTML = '';
     (job.pages || []).forEach(p => {
-      const c = document.createElement('div');
-      c.id = 'chip' + p.n; c.textContent = p.n;
+      const c = document.createElement('button');
+      c.type = 'button'; c.id = 'chip' + p.n; c.textContent = p.n;
+      c.setAttribute('aria-label', `Show page ${p.n}`);
       c.onclick = () => { selected = p.n; $('follow').checked = false; show(p.n); };
       strip.appendChild(c);
     });
@@ -349,7 +415,10 @@ async function refresh() {
   }
   (job.pages || []).forEach(p => {
     const c = $('chip' + p.n);
-    if (c) c.className = 'chip ' + p.state + (p.n === shown ? ' selected' : '');
+    if (c) {
+      c.className = 'chip ' + p.state + (p.n === shown ? ' selected' : '');
+      c.setAttribute('aria-pressed', p.n === shown ? 'true' : 'false');
+    }
   });
   if ($('follow').checked) selected = null;
   const want = pickPage(job);
@@ -404,7 +473,8 @@ async function show(n) {
     if (finalShown === n) { updateMeta(job); return; }
     try {
       const html = await (await fetch(`${base}/page_${n}.html`)).text();
-      out.innerHTML = html; paintRegions(regionsFromHtml(html)); finalShown = n;
+      const safeHtml = sanitizeOcrHtml(html);
+      out.innerHTML = safeHtml; paintRegions(regionsFromHtml(safeHtml)); finalShown = n;
     }
     catch { out.innerHTML = '<div class="waiting">could not load output</div>'; }
   } else if (p.state === 'error') {
@@ -417,9 +487,39 @@ async function show(n) {
   }
   updateMeta(job);
 }
-async function uploadFiles(files) {
-  for (const f of files) {
-    await fetch('/api/upload?name=' + encodeURIComponent(f.name), { method: 'POST', body: f });
+function uploadExtension(name) {
+  const match = String(name || '').toLowerCase().match(/\.([a-z0-9]+)$/);
+  return match ? match[1] : '';
+}
+function setUploadStatus(message, error = false) {
+  const status = $('uploadStatus');
+  status.textContent = message;
+  status.className = error ? 'error' : '';
+}
+async function uploadFiles(input) {
+  const files = [...(input || [])];
+  if (!files.length) return;
+  if (files.length > MAX_FILES) {
+    setUploadStatus(`Choose at most ${MAX_FILES} files at once.`, true); return;
+  }
+  for (const file of files) {
+    const ext = uploadExtension(file.name);
+    if (!UPLOAD_TYPES.has(ext) || !Number.isFinite(file.size) || file.size <= 0 || file.size > MAX_FILE_BYTES) {
+      setUploadStatus('Choose a supported PDF or image up to 100 MiB.', true); return;
+    }
+  }
+  setUploadStatus(`Uploading ${files.length} document${files.length === 1 ? '' : 's'}…`);
+  try {
+    for (const file of files) {
+      const ext = uploadExtension(file.name);
+      const response = await fetch('/api/upload?name=' + encodeURIComponent(file.name), {
+        method:'POST', headers:{ 'Content-Type':UPLOAD_MIME[ext] }, body:file,
+      });
+      if (!response.ok) throw new Error('upload rejected');
+    }
+    setUploadStatus(`${files.length} document${files.length === 1 ? '' : 's'} queued.`);
+  } catch {
+    setUploadStatus('Document Reader could not finish the batch; check the queue.', true);
   }
 }
 $('uploadBtn').onclick = () => $('fileInput').click();

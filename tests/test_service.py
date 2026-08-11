@@ -16,6 +16,20 @@ SPEC.loader.exec_module(service)
 
 
 class ServiceHelpersTest(unittest.TestCase):
+    def test_service_ui_is_profile_explicit_bounded_and_keyboard_accessible(self):
+        source = (ROOT / 'service' / 'firm.html').read_text(encoding='utf-8')
+        self.assertIn('Hermes Document Reader', source)
+        self.assertNotIn('Bearden', source)
+        self.assertNotIn('OCR-Inbox', source)
+        self.assertIn("$('profileName').textContent", source)
+        self.assertIn('MAX_FILES = 10', source)
+        self.assertIn('MAX_FILE_BYTES = 100 * 1024 * 1024', source)
+        self.assertIn('if (!response.ok)', source)
+        self.assertIn("document.createElement('button')", source)
+        self.assertIn("setAttribute('aria-pressed'", source)
+        self.assertIn('finished_with_errors', source)
+        self.assertIn('Recognized text', source)
+
     def test_sanitize_name_strips_paths_and_windows_metacharacters(self):
         self.assertEqual(service.sanitize_name('../bad:<name>.pdf'), 'bad__name_.pdf')
 
@@ -26,7 +40,11 @@ class ServiceHelpersTest(unittest.TestCase):
         self.assertNotIn('onclick', clean)
         self.assertNotIn('onerror', clean)
         self.assertNotIn('javascript:', clean)
-        self.assertIn('src="page.jpg"', clean)
+        self.assertNotIn('src=', clean)
+
+    def test_spreadsheet_formula_text_is_neutralized(self):
+        value = service.safe_spreadsheet_text('=HYPERLINK("https://example.invalid","open")')
+        self.assertTrue(value.startswith("'="))
 
     def test_extract_regions_maps_normalized_boxes_and_kinds(self):
         raw = '''
@@ -54,6 +72,10 @@ class ServiceHelpersTest(unittest.TestCase):
 
 
 class HttpHandlerTest(unittest.TestCase):
+    TOKEN = 'A' * 64
+    OWNER = 'a' * 64
+    INSTANCE = 'b' * 32
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.inbox = Path(self.tmp.name) / 'inbox'
@@ -62,7 +84,15 @@ class HttpHandlerTest(unittest.TestCase):
         self.jobs.mkdir()
         self.old_jobs = service.JOBS_DIR
         service.JOBS_DIR = self.jobs
-        self.server = service.ThreadingHTTPServer(('127.0.0.1', 0), service.Handler)
+        self.server = service.build_server(
+            '127.0.0.1', 0,
+            auth_token=self.TOKEN,
+            profile='default',
+            data_root=Path(self.tmp.name),
+            owner_fingerprint=self.OWNER,
+            instance_id=self.INSTANCE,
+            runtime_identity=None,
+        )
         self.server.inbox = self.inbox
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -75,8 +105,13 @@ class HttpHandlerTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def request(self, method, path, body=None, headers=None):
+        request_headers = {
+            'X-Document-Reader-Token': self.TOKEN,
+            'X-Document-Reader-Owner': self.OWNER,
+        }
+        request_headers.update(headers or {})
         conn = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=3)
-        conn.request(method, path, body=body, headers=headers or {})
+        conn.request(method, path, body=body, headers=request_headers)
         response = conn.getresponse()
         payload = response.read()
         result = response.status, dict(response.getheaders()), payload
@@ -102,6 +137,14 @@ class HttpHandlerTest(unittest.TestCase):
         self.assertEqual(status, 403)
         self.assertFalse((self.inbox / 'scan.pdf').exists())
 
+    def test_state_requires_authentication(self):
+        conn = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=3)
+        conn.request('GET', '/api/state')
+        response = conn.getresponse()
+        response.read()
+        self.assertEqual(response.status, 401)
+        conn.close()
+
     def test_jobs_path_cannot_escape_jobs_directory(self):
         sibling = self.jobs.parent / (self.jobs.name + '-private')
         sibling.mkdir()
@@ -110,12 +153,13 @@ class HttpHandlerTest(unittest.TestCase):
         self.assertEqual(status, 400)
 
     def test_served_job_html_is_sanitized(self):
-        job = self.jobs / 'job-1'
+        job_id = '20260810-010101-aaaaaaaa'
+        job = self.jobs / job_id
         job.mkdir()
         (job / 'page_1.html').write_text(
             '<p onclick="bad()">safe</p><script>bad()</script>', encoding='utf-8'
         )
-        status, _, body = self.request('GET', '/jobs/job-1/page_1.html')
+        status, _, body = self.request('GET', f'/jobs/{job_id}/page_1.html')
         self.assertEqual(status, 200)
         rendered = body.decode('utf-8')
         self.assertIn('<p>safe</p>', rendered)
@@ -123,10 +167,13 @@ class HttpHandlerTest(unittest.TestCase):
         self.assertNotIn('<script', rendered)
 
     def test_job_file_with_url_encoded_spaces_downloads(self):
-        job = self.jobs / 'job-2'
+        job_id = '20260810-010102-bbbbbbbb'
+        job = self.jobs / job_id
         job.mkdir()
         (job / 'finished scan.txt').write_text('done', encoding='utf-8')
-        status, headers, body = self.request('GET', '/jobs/job-2/finished%20scan.txt')
+        status, headers, body = self.request(
+            'GET', f'/jobs/{job_id}/finished%20scan.txt'
+        )
         self.assertEqual(status, 200)
         self.assertEqual(body, b'done')
         self.assertIn('attachment', headers['Content-Disposition'])

@@ -1,0 +1,27 @@
+{
+  "name": "hermes-document-reader",
+  "version": "0.1.0",
+  "description": "Profile-aware OCR service and native Hermes desktop document reader plugin.",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "lint": "node scripts/check-style.mjs",
+    "test": "node --test tests/ci/release-contract.test.mjs",
+    "check:locks": "node scripts/validate-service-locks.mjs",
+    "check:release": "node scripts/verify-release-metadata.mjs",
+    "validate": "npm run lint && npm test && npm run check:locks && npm run check:release",
+    "build:release": "node scripts/build-release-artifacts.mjs",
+    "smoke:release": "node scripts/smoke-release-artifacts.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "yaml": "2.9.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lEWFkRAD/hermes-document-reader.git"
+  }
+}
