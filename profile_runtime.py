@@ -697,34 +697,16 @@ def _harden_windows_secret_acl(path: Path) -> None:
     if os.name != "nt":
         return
     user_sid = _current_windows_sid()
-    script = (
-        "& { param([string]$LiteralPath,[string]$UserSid) "
-        "$ErrorActionPreference='Stop'; "
-        "$a=Get-Acl -LiteralPath $LiteralPath; "
-        "$a.SetAccessRuleProtection($true,$false); "
-        "foreach($rule in @($a.Access)){[void]$a.RemoveAccessRuleSpecific($rule)}; "
-        "$allow=[Security.AccessControl.AccessControlType]::Allow; "
-        "$user=New-Object Security.Principal.SecurityIdentifier($UserSid); "
-        "$system=New-Object Security.Principal.SecurityIdentifier('S-1-5-18'); "
-        "$userRights=[Security.AccessControl.FileSystemRights]::Read -bor "
-        "[Security.AccessControl.FileSystemRights]::Write; "
-        "$userRule=New-Object Security.AccessControl.FileSystemAccessRule"
-        "($user,$userRights,$allow); "
-        "$systemRule=New-Object Security.AccessControl.FileSystemAccessRule"
-        "($system,[Security.AccessControl.FileSystemRights]::FullControl,$allow); "
-        "$a.AddAccessRule($userRule); $a.AddAccessRule($systemRule); "
-        "Set-Acl -LiteralPath $LiteralPath -AclObject $a }"
-    )
+    command = [
+        "icacls.exe",
+        str(path),
+        "/inheritance:r",
+        "/grant:r",
+        f"*{user_sid}:(R,W)",
+        "*S-1-5-18:(F)",
+    ]
     result = subprocess.run(
-        [
-            "powershell.exe",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            script,
-            str(path),
-            user_sid,
-        ],
+        command,
         capture_output=True,
         text=True,
         timeout=15,
@@ -739,9 +721,14 @@ def _validate_windows_secret_acl(path: Path) -> None:
     if os.name != "nt":
         return
     user_sid = _current_windows_sid()
+    environment = dict(os.environ)
+    environment["HERMES_DOCUMENT_READER_ACL_PATH"] = str(path)
     script = (
-        "& { param([string]$LiteralPath) "
-        "$a=Get-Acl -LiteralPath $LiteralPath; "
+        "& { $ErrorActionPreference='Stop'; "
+        "$LiteralPath=[Environment]::GetEnvironmentVariable("
+        "'HERMES_DOCUMENT_READER_ACL_PATH','Process'); "
+        "if([string]::IsNullOrEmpty($LiteralPath)){throw 'ACL path is missing'}; "
+        "$a=Get-Acl -LiteralPath $LiteralPath -ErrorAction Stop; "
         "$r=@($a.Access | ForEach-Object { "
         "$s=$_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value; "
         "[pscustomobject]@{sid=$s;type=[string]$_.AccessControlType;inherited=$_.IsInherited} }); "
@@ -749,11 +736,12 @@ def _validate_windows_secret_acl(path: Path) -> None:
         "ConvertTo-Json -Compress -Depth 4 }"
     )
     result = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script, str(path)],
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output=True,
         text=True,
         timeout=15,
         check=False,
+        env=environment,
     )
     if result.returncode != 0:
         raise ProfileRuntimeError("could not inspect the Windows ACL on the service token")

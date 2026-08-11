@@ -17,6 +17,10 @@ import profile_runtime
 import cli
 
 
+NATIVE_WINDOWS_ACL_HARDENER = profile_runtime._harden_windows_secret_acl
+NATIVE_WINDOWS_ACL_VALIDATOR = profile_runtime._validate_windows_secret_acl
+
+
 @pytest.fixture(autouse=True)
 def no_native_acl(monkeypatch):
     # Native ACL behavior is covered by the Windows runtime security suite. The
@@ -1145,6 +1149,84 @@ def test_service_token_creation_rejects_foreign_acl_postcondition(monkeypatch, t
     with pytest.raises(profile_runtime.ProfileRuntimeError, match="foreign ACL"):
         profile_runtime.ensure_profile_token(runtime)
     assert not runtime.token_file.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows ACL hardening contract")
+def test_windows_acl_hardener_uses_icacls_then_exact_postcondition(
+    monkeypatch, tmp_path
+):
+    path = (tmp_path / "Profile Ω" / "engine token").resolve()
+    sid = "S-1-5-21-100-200-300-400"
+    commands = []
+    validated = []
+
+    def record_run(command, **kwargs):
+        commands.append((list(command), kwargs))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(profile_runtime, "_current_windows_sid", lambda: sid)
+    monkeypatch.setattr(profile_runtime.subprocess, "run", record_run)
+    monkeypatch.setattr(
+        profile_runtime,
+        "_validate_windows_secret_acl",
+        lambda selected: validated.append(Path(selected)),
+    )
+
+    NATIVE_WINDOWS_ACL_HARDENER(path)
+
+    assert commands[0][0] == [
+        "icacls.exe",
+        str(path),
+        "/inheritance:r",
+        "/grant:r",
+        f"*{sid}:(R,W)",
+        "*S-1-5-18:(F)",
+    ]
+    assert commands[0][1] == {
+        "capture_output": True,
+        "text": True,
+        "timeout": 15,
+        "check": False,
+    }
+    assert validated == [path]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows ACL hardening contract")
+def test_native_icacls_handles_unicode_path_and_rejects_explicit_foreign_ace(
+    monkeypatch, tmp_path
+):
+    path = (tmp_path / "Hermes Profiles Ω" / "engine token é.token").resolve()
+    path.parent.mkdir()
+    path.write_text("profile-secret-value\n", encoding="utf-8")
+    monkeypatch.setattr(
+        profile_runtime,
+        "_validate_windows_secret_acl",
+        NATIVE_WINDOWS_ACL_VALIDATOR,
+    )
+
+    try:
+        NATIVE_WINDOWS_ACL_HARDENER(path)
+        NATIVE_WINDOWS_ACL_VALIDATOR(path)
+        result = subprocess.run(
+            ["icacls.exe", str(path), "/grant", "*S-1-5-32-545:(R)"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        assert result.returncode == 0
+        with pytest.raises(
+            profile_runtime.ProfileRuntimeError,
+            match="foreign or inherited principal",
+        ):
+            NATIVE_WINDOWS_ACL_HARDENER(path)
+        with pytest.raises(
+            profile_runtime.ProfileRuntimeError,
+            match="foreign or inherited principal",
+        ):
+            NATIVE_WINDOWS_ACL_VALIDATOR(path)
+    finally:
+        path.unlink(missing_ok=True)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows ACL publication contract")

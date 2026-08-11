@@ -1103,8 +1103,15 @@ class EngineConfigurationTest(unittest.TestCase):
                     service.grm_ocr.load_profile_config(
                         runtime.engine_config_file, runtime.engine_token_file
                     )
+                with self.assertRaisesRegex(
+                    ProfileRuntimeError, "foreign or inherited principal"
+                ):
+                    _harden_windows_secret_acl(runtime.engine_token_file)
             finally:
-                _harden_windows_secret_acl(runtime.engine_token_file)
+                # The fixture intentionally has a foreign explicit ACE.  Production
+                # must refuse to overwrite it; this test owns the exact temporary
+                # file and removes it instead of asking the hardener to normalize it.
+                runtime.engine_token_file.unlink(missing_ok=True)
 
 
 class ServiceConfigurationTest(unittest.TestCase):
