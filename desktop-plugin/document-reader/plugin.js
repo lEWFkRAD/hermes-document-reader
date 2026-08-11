@@ -1,378 +1,440 @@
-/**
- * Bearden Document Reader — Hermes desktop plugin.
- *
- * Native page over the firm OCR service (ocr_service.py on YOUR-SERVER:8899):
- * live side-by-side view of the page being scanned and what GRM reads,
- * upload, queue, and finished-file downloads. Same backend as the staff
- * web page; this is the in-app skin.
- *
- * Design: DESIGN.md rules — tokens not literals (inline style with --ui-*
- * vars), flat, hairlines, quiet motion.
- */
+/** Profile-aware Hermes Desktop and HUD extension for Document Reader. */
 
 import {
-  host,
-  useQuery,
+  COMPOSER_AREAS,
   PALETTE_AREA,
   ROUTES_AREA,
   SIDEBAR_NAV_AREA,
+  host,
+  queryClient,
+  useQuery,
+  useValue,
 } from '@hermes/plugin-sdk'
 import * as React from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const ID = 'document-reader'
-const CANDIDATES = ['http://localhost:8899', 'http://your-ocr-host:8899']
-let SERVICE = null
-
-async function service() {
-  if (SERVICE) return SERVICE
-  for (const base of CANDIDATES) {
-    try {
-      const r = await fetch(base + '/api/state', { signal: AbortSignal.timeout(1500) })
-      if (r.ok) { SERVICE = base; return base }
-    } catch {}
-  }
-  throw new Error('OCR service unreachable')
+const VERSION = '0.1.0'
+const MAX_FILES = 10
+const MAX_FILE_BYTES = 100 * 1024 * 1024
+const ACCEPT = '.pdf,.png,.jpg,.jpeg,.tiff,.bmp'
+const TYPES = new Set(['pdf', 'png', 'jpg', 'jpeg', 'tiff', 'bmp'])
+const MIME = {
+  pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+  tiff: 'image/tiff', bmp: 'image/bmp',
 }
+const hairline = '1px solid var(--ui-stroke-tertiary)'
 
-const hair = '1px solid var(--ui-stroke-tertiary)'
 const S = {
-  root: { display: 'flex', flexDirection: 'column', height: '100%', fontSize: 13 },
-  bar: { display: 'flex', alignItems: 'center', gap: 12, padding: '8px 16px', borderBottom: hair, flexWrap: 'wrap' },
-  name: { color: 'var(--ui-text-primary)', fontWeight: 600, maxWidth: '28ch', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  state: { color: 'var(--ui-text-tertiary)', fontSize: 12 },
-  meter: { flex: 1, minWidth: 100, height: 2, background: 'var(--ui-stroke-tertiary)', borderRadius: 1, overflow: 'hidden' },
-  fill: { height: '100%', background: 'var(--ui-accent)', transition: 'width 0.4s' },
-  btn: { background: 'var(--ui-bg-quaternary)', color: 'var(--ui-text-primary)', border: 'none', padding: '4px 12px', borderRadius: 4, fontSize: 12, fontWeight: 500, cursor: 'pointer' },
-  strip: { display: 'flex', gap: 4, padding: '6px 16px', overflowX: 'auto', borderBottom: hair },
-  chip: sel => ({
-    minWidth: 26, textAlign: 'center', padding: '2px 7px', borderRadius: 4, fontSize: 11.5,
-    cursor: 'pointer', userSelect: 'none',
-    background: sel ? 'var(--ui-bg-quaternary)' : 'transparent',
-  }),
-  grid: { flex: 1, display: 'grid', gridTemplateColumns: '1fr 1fr', overflow: 'hidden' },
-  pane: { overflow: 'auto', position: 'relative' },
-  paneR: { overflow: 'auto', position: 'relative', borderLeft: hair },
-  label: {
-    position: 'sticky', top: 0, zIndex: 2, background: 'var(--ui-bg-editor, var(--ui-bg-primary))',
-    padding: '5px 14px', fontSize: 10.5, letterSpacing: '0.08em', textTransform: 'uppercase',
-    color: 'var(--ui-text-quaternary)', borderBottom: hair,
-  },
-  out: { padding: '14px 18px', lineHeight: 1.55, color: 'var(--ui-text-primary)' },
-  pre: { margin: 0, padding: '14px 18px', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'var(--font-mono, Consolas, monospace)', fontSize: 12, lineHeight: 1.5, color: 'var(--ui-text-secondary)' },
-  quiet: { color: 'var(--ui-text-quaternary)', padding: 28, textAlign: 'center' },
-  empty: { flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10 },
-  hist: { padding: '8px 16px', borderTop: hair, fontSize: 12 },
-  link: { color: 'var(--ui-accent)', marginRight: 12, textDecoration: 'none', fontWeight: 600, cursor: 'pointer' },
+  root: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, fontSize: 13 },
+  toolbar: { display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', borderBottom: hairline, flexWrap: 'wrap' },
+  title: { color: 'var(--ui-text-primary)', fontWeight: 650, maxWidth: '30ch', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  quiet: { color: 'var(--ui-text-quaternary)' },
+  button: { border: 0, borderRadius: 4, background: 'var(--ui-bg-quaternary)', color: 'var(--ui-text-primary)', padding: '5px 10px', cursor: 'pointer', fontSize: 12 },
+  primary: { background: 'var(--ui-accent)', color: 'var(--theme-primary-foreground, #fff)' },
+  meter: { flex: 1, minWidth: 90, height: 2, overflow: 'hidden', background: 'var(--ui-stroke-tertiary)' },
+  queue: { display: 'flex', gap: 6, overflowX: 'auto', padding: '6px 14px', borderBottom: hairline, color: 'var(--ui-text-tertiary)' },
+  pages: { display: 'flex', gap: 4, overflowX: 'auto', padding: '6px 14px', borderBottom: hairline },
+  page: selected => ({ minWidth: 28, padding: '3px 7px', border: 0, borderRadius: 4, cursor: 'pointer', color: selected ? 'var(--ui-text-primary)' : 'var(--ui-text-tertiary)', background: selected ? 'var(--ui-bg-quaternary)' : 'transparent' }),
+  grid: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', minHeight: 0, flex: 1 },
+  pane: { position: 'relative', overflow: 'auto', minWidth: 0 },
+  right: { position: 'relative', overflow: 'auto', minWidth: 0, borderLeft: hairline },
+  label: { position: 'sticky', top: 0, zIndex: 5, padding: '5px 12px', borderBottom: hairline, background: 'var(--ui-bg-primary)', color: 'var(--ui-text-quaternary)', fontSize: 10, letterSpacing: '.08em', textTransform: 'uppercase' },
+  empty: { height: '100%', minHeight: 180, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, padding: 24, textAlign: 'center' },
+  pre: { margin: 0, padding: 16, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', color: 'var(--ui-text-secondary)', fontFamily: 'var(--font-mono, Consolas, monospace)', lineHeight: 1.5 },
+  history: { maxHeight: 230, overflowY: 'auto', borderTop: hairline },
+  row: { padding: '8px 14px', borderBottom: hairline },
+  overlay: { position: 'absolute', inset: 8, zIndex: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1.5px dashed var(--ui-accent)', borderRadius: 8, background: 'color-mix(in srgb, var(--ui-bg-primary) 88%, transparent)', color: 'var(--ui-text-primary)', fontWeight: 650, pointerEvents: 'none' },
+}
+const OFFSCREEN_INPUT = { position: 'fixed', left: -10000, top: -10000, width: 1, height: 1, opacity: 0, pointerEvents: 'none' }
+
+function extension(name) {
+  const match = String(name || '').toLowerCase().match(/\.([a-z0-9]+)$/)
+  return match ? match[1] : ''
 }
 
-const BEAM_CSS = `
-@keyframes docreader-sweep { 0% { top: -112px; } 58% { top: calc(100% - 28px); } 100% { top: -112px; } }
-@keyframes docreader-region-in { from { opacity: 0; transform: scale(.985); } to { opacity: 1; transform: scale(1); } }
-@keyframes docreader-region-pulse { 50% { border-color: rgba(178,255,203,.96); box-shadow: 0 0 20px rgba(40,255,119,.38); } }
-.docreader-beam { position: absolute; left: 0; right: 0; height: 112px; top: 0; pointer-events: none; z-index: 4;
-  background: linear-gradient(180deg, rgba(35,255,126,0) 0%, rgba(35,255,126,.025) 24%, rgba(35,255,126,.16) 47%, rgba(112,255,168,.34) 50%, rgba(35,255,126,.10) 55%, rgba(35,255,126,0) 100%);
-  mix-blend-mode: screen; animation: docreader-sweep 2.65s cubic-bezier(.45,.02,.55,.98) infinite; }
-.docreader-beam::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 1.5px;
-  background: linear-gradient(90deg, transparent, #5dff9a 8%, #d3ffe3 50%, #5dff9a 92%, transparent);
-  box-shadow: 0 0 7px 2px rgba(48,255,124,.85), 0 0 24px 6px rgba(32,255,112,.42); }
-.docreader-regions { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 3; }
-.docreader-region { position: absolute; border: 1px solid rgba(63,255,135,.62); border-radius: 3px; background: rgba(43,255,116,.045);
-  box-shadow: 0 0 0 1px rgba(22,255,105,.08) inset, 0 0 12px rgba(31,255,112,.16); animation: docreader-region-in .32s ease-out both; }
-.docreader-region[data-kind="data"] { border-color: rgba(146,255,77,.9); background: rgba(123,255,62,.055); box-shadow: 0 0 18px rgba(102,255,72,.28); }
-.docreader-region[data-kind="section"] { border-color: rgba(56,255,178,.9); border-left-width: 3px; background: rgba(40,255,159,.07); }
-.docreader-region[data-kind="visual"] { border-style: dashed; border-color: rgba(73,255,209,.82); }
-.docreader-region.hot { animation: docreader-region-in .32s ease-out both, docreader-region-pulse 1.35s ease-in-out infinite; }
-.docreader-region-tag { position: absolute; left: -1px; top: -16px; padding: 2px 5px; border-radius: 2px 2px 0 0; background: rgba(5,24,14,.88);
-  color: rgba(129,255,177,.94); font: 600 8px/12px Consolas,monospace; letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; }
-.docreader-region[data-kind="text"] .docreader-region-tag { display: none; }
-@keyframes docreader-blink { to { opacity: 0; } }
-.docreader-caret { display: inline-block; width: 6px; height: 1em; vertical-align: text-bottom;
-  background: var(--ui-accent); animation: docreader-blink 0.9s steps(2) infinite; }
-`
-
-function withSectionBands(regions) {
-  if (!regions.length || regions.some(r => r.kind === 'section')) return regions
-  const sorted = [...regions].sort((a, b) => a.y - b.y || a.x - b.x)
-  const groups = []
-  for (const r of sorted) {
-    let g = groups[groups.length - 1]
-    const gap = g ? r.y - g.bottom : Infinity
-    if (!g || gap > 4.5 || (r.y - g.top > 24 && gap > 1.4)) {
-      g = { left: r.x, right: r.x + r.w, top: r.y, bottom: r.y + r.h, count: 1 }
-      groups.push(g)
-    } else {
-      g.left = Math.min(g.left, r.x); g.right = Math.max(g.right, r.x + r.w)
-      g.bottom = Math.max(g.bottom, r.y + r.h); g.count++
-    }
+function validateFiles(input) {
+  const files = [...(input || [])]
+  if (!files.length) return []
+  if (files.length > MAX_FILES) throw new Error(`Choose at most ${MAX_FILES} files at once`)
+  for (const file of files) {
+    const ext = extension(file.name)
+    if (!TYPES.has(ext)) throw new Error(`${file.name}: unsupported file type`)
+    if (!Number.isFinite(file.size) || file.size <= 0) throw new Error(`${file.name}: file is empty`)
+    if (file.size > MAX_FILE_BYTES) throw new Error(`${file.name}: exceeds the 100 MiB limit`)
   }
-  const bands = groups.filter(g => g.count >= 2).slice(0, 6).map(g => ({
-    x: Math.max(0, g.left - 1.1), y: Math.max(0, g.top - 0.8),
-    w: Math.min(100, g.right + 1.1) - Math.max(0, g.left - 1.1),
-    h: Math.min(100, g.bottom + 0.8) - Math.max(0, g.top - 0.8),
-    kind: 'section', label: 'section',
-  }))
-  return [...bands, ...regions]
+  return files
 }
 
-function RegionOverlay({ regions = [] }) {
-  const boxes = regions.filter(r => [r.x, r.y, r.w, r.h].every(Number.isFinite)).slice(-48)
-  const safe = withSectionBands(boxes)
-  return jsx('div', { className: 'docreader-regions', 'aria-hidden': true, children: safe.map((r, i) => {
-    const kind = ['text', 'data', 'section', 'visual'].includes(r.kind) ? r.kind : 'text'
-    return jsx('div', {
-      className: `docreader-region${i >= safe.length - 4 ? ' hot' : ''}`,
-      'data-kind': kind,
-      style: { left: `${r.x}%`, top: `${r.y}%`, width: `${r.w}%`, height: `${r.h}%` },
-      children: jsx('span', { className: 'docreader-region-tag', children: kind }),
-    }, `${i}:${r.x}:${r.y}:${r.w}:${r.h}`)
-  }) })
+function isFileDrag(event) {
+  return [...(event.dataTransfer?.types || [])].includes('Files')
 }
 
-function useServiceState() {
+function openFileInput(input) {
+  if (!input) return
+  try {
+    if (typeof input.showPicker === 'function') input.showPicker()
+    else input.click()
+  } catch {
+    input.click()
+  }
+}
+
+function validIdentity(value) {
+  return value && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(String(value.profile || ''))
+    && /^[0-9a-f]{64}$/.test(String(value.profile_fingerprint || ''))
+}
+
+function humanJobState(value) {
+  return ({
+    loading: 'opening file',
+    rendering: 'preparing pages',
+    ocr: 'recognizing text',
+    finished: 'complete',
+    finished_with_errors: 'complete with review needed',
+    failed: 'failed',
+    cancelled: 'stopped',
+    quarantined: 'quarantined',
+  })[String(value || '')] || 'ready'
+}
+
+async function uploadFiles(ctx, input, expected = null) {
+  const files = validateFiles(input)
+  if (!files.length) return 0
+  let identity = expected
+  if (!validIdentity(identity)) identity = await ctx.rest('/state', { timeoutMs: 5000 })
+  if (!validIdentity(identity)) throw new Error('profile identity is unavailable')
+  if (expected?.profile && String(identity.profile) !== String(expected.profile)) {
+    throw new Error('profile changed before upload')
+  }
+  const assertion = `expected_profile=${encodeURIComponent(identity.profile)}&expected_fingerprint=${encodeURIComponent(identity.profile_fingerprint)}`
+  let accepted = 0
+  for (const file of files) {
+    const ext = extension(file.name)
+    const bytes = await file.arrayBuffer()
+    if (bytes.byteLength !== file.size || bytes.byteLength > MAX_FILE_BYTES) {
+      throw new Error(`${file.name}: file changed while it was being read`)
+    }
+    const result = await ctx.rest(`/upload?${assertion}`, {
+      method: 'POST',
+      upload: { filename: file.name, contentType: MIME[ext], bytes },
+      timeoutMs: 180000,
+    })
+    if (!result?.ok) throw new Error(`${file.name}: service did not accept the upload`)
+    if (result.profile !== identity.profile || result.profile_fingerprint !== identity.profile_fingerprint) {
+      throw new Error('profile changed during upload')
+    }
+    accepted += 1
+  }
+  return accepted
+}
+
+function chooseFiles() {
+  return new Promise((resolve, reject) => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.multiple = true
+    input.accept = ACCEPT
+    input.style.cssText = 'position:fixed;left:-10000px;top:-10000px;width:1px;height:1px;opacity:0;pointer-events:none'
+    let settled = false
+    let focusTimer = null
+    const cleanup = () => {
+      if (focusTimer !== null) window.clearTimeout(focusTimer)
+      window.removeEventListener('focus', onFocus)
+      input.removeEventListener('change', onChange)
+      input.removeEventListener('cancel', onCancel)
+      input.remove()
+    }
+    const finish = files => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve(files)
+    }
+    const fail = error => {
+      if (settled) return
+      settled = true
+      cleanup()
+      reject(error)
+    }
+    const onChange = () => finish([...(input.files || [])])
+    const onCancel = () => finish([])
+    const onFocus = () => {
+      focusTimer = window.setTimeout(() => {
+        if (!input.files?.length) finish([])
+      }, 400)
+    }
+    input.addEventListener('change', onChange)
+    input.addEventListener('cancel', onCancel)
+    window.addEventListener('focus', onFocus)
+    document.body.appendChild(input)
+    try {
+      if (typeof input.showPicker === 'function') input.showPicker()
+      else input.click()
+    } catch (firstError) {
+      try { input.click() } catch { fail(firstError) }
+    }
+  })
+}
+
+async function hudUpload(ctx, insertText) {
+  const files = await chooseFiles()
+  if (!files.length) return
+  try {
+    const count = await uploadFiles(ctx, files)
+    insertText(`\n[Document Reader queued ${count} file${count === 1 ? '' : 's'}]\n`)
+    host.notify({ kind: 'info', message: `${count} document${count === 1 ? '' : 's'} queued` })
+  } catch {
+    host.notify({ kind: 'error', message: 'Document Reader could not finish the batch; check its queue' })
+  }
+}
+
+function useProfileReset() {
+  const profile = useValue(host.state.profile) || 'default'
+  const previous = React.useRef(profile)
+  React.useEffect(() => {
+    if (previous.current !== profile) {
+      queryClient.removeQueries({ queryKey: [ID, previous.current] })
+      previous.current = profile
+    }
+  }, [profile])
+  return profile
+}
+
+function useReaderState(ctx, profile) {
   return useQuery({
-    queryKey: ['document-reader', 'state'],
-    queryFn: async () => {
-      const base = await service()
-      const r = await fetch(base + '/api/state')
-      if (!r.ok) throw new Error('state fetch failed')
-      const data = await r.json()
-      return { base, data }
-    },
-    refetchInterval: 700,
+    queryKey: [ID, profile, 'state'],
+    queryFn: () => ctx.rest('/state', { timeoutMs: 5000 }),
+    refetchInterval: 850,
     retry: 1,
   })
 }
 
-function PageHtml({ url }) {
-  const q = useQuery({
-    queryKey: ['document-reader', 'page', url],
-    queryFn: async () => (await fetch(url)).text(),
+function useAsset(ctx, profile, jobId, filename) {
+  return useQuery({
+    queryKey: [ID, profile, 'asset', jobId, filename],
+    queryFn: () => ctx.rest(`/asset/${encodeURIComponent(jobId)}/${encodeURIComponent(filename)}`, { timeoutMs: 30000 }),
+    enabled: Boolean(jobId && filename),
     staleTime: Infinity,
+    gcTime: 15000,
+    retry: 1,
   })
-  if (!q.data) return jsx('div', { style: S.quiet, children: 'loading…' })
-  return jsx('div', { style: S.out, dangerouslySetInnerHTML: { __html: q.data } })
 }
 
-function Reader() {
-  const q = useServiceState()
-  const [selected, setSelected] = React.useState(null)
-  const [showHist, setShowHist] = React.useState(false)
-  const [dragging, setDragging] = React.useState(false)
-  const fileRef = React.useRef(null)
-  const preRef = React.useRef(null)
+function decodeBase64(value) {
+  const raw = atob(value)
+  const bytes = new Uint8Array(raw.length)
+  for (let i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i)
+  return bytes
+}
 
-  const base = q.data?.base
-  const st = q.data?.data
-  const job = st?.job
+function PageImage({ ctx, profile, jobId, page }) {
+  const asset = useAsset(ctx, profile, jobId, `page_${page}.jpg`)
+  if (asset.isError) return jsx('div', { style: S.empty, children: 'Page preview unavailable' })
+  if (!asset.data?.data) return jsx('div', { style: S.empty, children: 'Loading page preview…' })
+  const src = `data:${asset.data.content_type};base64,${asset.data.data}`
+  return jsx('img', { src, alt: `Page ${page}`, style: { width: '100%', display: 'block' } })
+}
 
-  React.useEffect(() => {
-    if (preRef.current) preRef.current.scrollTop = preRef.current.scrollHeight
-  }, [job?.partial])
-  React.useEffect(() => { setSelected(null) }, [job?.id])
+function PageText({ ctx, profile, job, page }) {
+  const pageState = job?.pages?.[page - 1]
+  const asset = useAsset(ctx, profile, job?.id, pageState?.state === 'done' ? `page_${page}.html` : '')
+  if (pageState?.state === 'working') return jsx('pre', { style: S.pre, children: job.partial || 'Reading…' })
+  if (pageState?.state === 'error') return jsx('div', { style: S.empty, children: `Page could not be read: ${pageState.error || 'unknown error'}` })
+  if (pageState?.state !== 'done') return jsx('div', { style: S.empty, children: 'Not read yet' })
+  if (asset.isError) return jsx('div', { style: S.empty, children: 'Recognized text unavailable' })
+  if (!asset.data?.html) return jsx('div', { style: S.empty, children: 'Loading recognized text…' })
+  const parsed = new DOMParser().parseFromString(asset.data.html, 'text/html')
+  return jsx('pre', { style: S.pre, children: parsed.body.textContent || '' })
+}
 
-  // Prefetch every page image as soon as the job has rendered them, so
-  // switching pages (and auto-follow) doesn't pop in late.
-  React.useEffect(() => {
-    if (!job || !base || !job.total) return
-    for (let n = 1; n <= job.total; n++) {
-      const img = new Image()
-      img.src = `${base}${job.base}/page_${n}.jpg`
+async function downloadAsset(ctx, jobId, filename) {
+  try {
+    const asset = await ctx.rest(`/asset/${encodeURIComponent(jobId)}/${encodeURIComponent(filename)}`, { timeoutMs: 60000 })
+    if (asset?.kind !== 'binary' || asset.encoding !== 'base64') throw new Error('download response was invalid')
+    const blob = new Blob([decodeBase64(asset.data)], { type: asset.content_type })
+    const url = URL.createObjectURL(blob)
+    try {
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = asset.name || filename
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+    } finally {
+      window.setTimeout(() => URL.revokeObjectURL(url), 0)
     }
-  }, [job?.id, job?.total, base])
+  } catch (error) {
+    host.notify({ kind: 'error', message: `Download failed: ${error?.message || error}` })
+  }
+}
 
-  if (q.isError) {
+function Reader({ ctx }) {
+  const profile = useProfileReset()
+  const query = useReaderState(ctx, profile)
+  const [selected, setSelected] = React.useState(null)
+  const [historyOpen, setHistoryOpen] = React.useState(false)
+  const [dragging, setDragging] = React.useState(false)
+  const [uploading, setUploading] = React.useState(false)
+  const inputRef = React.useRef(null)
+  const dragDepth = React.useRef(0)
+  const inFlight = React.useRef(false)
+  const previousJob = React.useRef(null)
+  const state = query.data?.service
+  const job = state?.job
+
+  React.useEffect(() => {
+    setSelected(null)
+    setHistoryOpen(false)
+    setDragging(false)
+    dragDepth.current = 0
+  }, [profile])
+  React.useEffect(() => setSelected(null), [job?.id])
+  React.useEffect(() => {
+    if (previousJob.current && previousJob.current !== job?.id) {
+      queryClient.removeQueries({ queryKey: [ID, profile, 'asset', previousJob.current] })
+    }
+    previousJob.current = job?.id || null
+  }, [profile, job?.id])
+
+  const send = React.useCallback(async input => {
+    if (inFlight.current) return
+    inFlight.current = true
+    setUploading(true)
+    try {
+      const count = await uploadFiles(ctx, input, {
+        profile,
+        profile_fingerprint: query.data?.profile_fingerprint,
+      })
+      if (count) host.notify({ kind: 'info', message: `${count} document${count === 1 ? '' : 's'} queued for ${profile}` })
+      await query.refetch()
+    } catch (error) {
+      host.notify({ kind: 'error', message: `Document Reader upload failed: ${error?.message || error}` })
+    } finally {
+      inFlight.current = false
+      setUploading(false)
+    }
+  }, [ctx, profile, query])
+
+  const onDragEnter = event => {
+    if (!isFileDrag(event)) return
+    event.preventDefault(); event.stopPropagation(); dragDepth.current += 1; setDragging(true)
+  }
+  const onDragOver = event => {
+    if (!isFileDrag(event)) return
+    event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'copy'
+  }
+  const onDragLeave = event => {
+    if (!isFileDrag(event) && dragDepth.current === 0) return
+    event.preventDefault(); event.stopPropagation(); dragDepth.current = Math.max(0, dragDepth.current - 1)
+    if (dragDepth.current === 0) setDragging(false)
+  }
+  const onDrop = event => {
+    if (!isFileDrag(event)) return
+    event.preventDefault(); event.stopPropagation(); dragDepth.current = 0; setDragging(false)
+    const files = [...(event.dataTransfer?.files || [])]
+    if (files.length) void send(files)
+  }
+
+  if (query.isError) {
+    const selector = profile === 'default' ? '' : `-p ${profile} `
     return jsxs('div', { style: { ...S.root, ...S.empty }, children: [
-      jsx('div', { style: { color: 'var(--ui-text-secondary)', fontWeight: 600 }, children: 'Document Reader service unreachable' }),
-      jsx('div', { style: { color: 'var(--ui-text-quaternary)', fontSize: 12 }, children: 'Expected at your-ocr-host:8899 — is the service running?' }),
+      jsx('strong', { children: `Document Reader is not ready for profile “${profile}”` }),
+      jsx('span', { style: S.quiet, children: `Run hermes ${selector}document-reader status, then configure, install, or recover as reported.` }),
     ] })
   }
-  if (!st) return jsx('div', { style: { ...S.root, ...S.empty }, children: jsx('div', { style: S.quiet, children: '…' }) })
+  if (!state) return jsx('div', { style: { ...S.root, ...S.empty }, children: 'Loading Document Reader…' })
 
-  const upload = async files => {
-    for (const f of files) {
-      await fetch(`${base}/api/upload?name=${encodeURIComponent(f.name)}`, { method: 'POST', body: f })
+  const shown = selected ?? (job ? Math.max(1, job.state === 'finished' ? job.total : job.current || 1) : 0)
+  const progress = job?.total ? `${Math.min(100, (100 * job.done) / job.total)}%` : '0%'
+  const queue = state.queue || []
+  const active = Boolean(job && !['finished', 'finished_with_errors', 'failed', 'cancelled', 'quarantined'].includes(job.state))
+
+  const cancel = async () => {
+    try {
+      await ctx.rest('/cancel', { method: 'POST', timeoutMs: 5000 })
+      host.notify({ kind: 'info', message: 'Stopping the current document' })
+    } catch (error) {
+      host.notify({ kind: 'error', message: `Could not stop the document: ${error?.message || error}` })
     }
-    host.notify({ kind: 'info', message: `${files.length} file(s) sent to the Document Reader` })
   }
 
-  const shown = selected ?? (job ? (job.state === 'finished' ? job.total : job.current || 1) : 0)
-  const page = job?.pages?.[shown - 1]
-  const liveRegions = page?.state === 'working' && job?.region_page === shown ? (job.regions || []) : []
-
-  const toolbar = jsxs('div', { style: S.bar, children: [
-    jsx('span', { style: S.name, children: job ? (job.current_file || job.name) : 'Document Reader' }),
-    jsx('span', { style: { ...S.state, color: job?.state === 'finished' ? 'var(--ui-accent)' : 'var(--ui-text-tertiary)' },
-      children: job ? ({ loading: 'opening file', rendering: 'preparing pages', ocr: `reading page ${Math.min(job.current, job.total)} of ${job.total}`, finished: 'done', failed: 'problem' }[job.state] || job.state)
-                    : (st.queue?.length ? 'starting…' : 'ready') }),
-    jsx('div', { style: S.meter, children: jsx('div', { style: { ...S.fill, width: job?.total ? `${(100 * job.done) / job.total}%` : '0%' } }) }),
-    jsx('button', { style: { ...S.btn, background: 'var(--ui-accent)', color: 'var(--theme-primary-foreground, #fff)' }, type: 'button',
-      onClick: () => fileRef.current?.click(), children: 'Scan a document' }),
-    job && ['loading', 'rendering', 'ocr'].includes(job.state)
-      ? jsx('button', { style: { ...S.btn, color: 'var(--ui-text-secondary)' }, type: 'button',
-          onClick: async () => {
-            if (!window.confirm('Stop reading this document?')) return
-            await fetch(`${base}/api/cancel`, { method: 'POST' })
-            host.notify({ kind: 'info', message: 'Stopping the current scan' })
-          },
-          children: 'Stop this scan' })
-      : null,
-    jsx('button', { style: S.btn, type: 'button', onClick: () => setShowHist(v => !v), children: 'Finished files' }),
-    jsx('input', { ref: fileRef, type: 'file', multiple: true, style: { display: 'none' },
-      accept: '.pdf,.png,.jpg,.jpeg,.tiff,.bmp',
-      onChange: e => { upload([...e.target.files]); e.target.value = '' } }),
-  ] })
-
-  const strip = job ? jsx('div', { style: S.strip, children: (job.pages || []).map(p =>
-    jsx('div', {
-      style: {
-        ...S.chip(p.n === shown),
-        color: p.state === 'working' ? 'var(--ui-accent)'
-             : p.state === 'error' ? 'var(--ui-text-secondary)'
-             : p.state === 'done' ? 'var(--ui-text-secondary)' : 'var(--ui-text-quaternary)',
-        fontWeight: p.n === shown || p.state === 'working' ? 600 : 400,
-      },
-      onClick: () => setSelected(p.n),
-      children: String(p.n),
-    }, p.n)
-  ) }) : null
-
-  const queueLine = st.queue?.length
-    ? jsx('div', { style: { padding: '4px 16px', fontSize: 12, color: 'var(--ui-text-quaternary)', borderBottom: hair },
-        children: 'Waiting in line: ' + st.queue.map(x => x.name).join('  ·  ') })
-    : null
-
-  let right
-  if (!job) {
-    right = jsx('div', { style: S.quiet, children: 'nothing being read right now' })
-  } else if (page?.state === 'done') {
-    right = jsx(PageHtml, { url: `${base}${job.base}/page_${shown}.html` })
-  } else if (page?.state === 'working') {
-    const text = job.partial || ''
-    right = jsxs('pre', { style: S.pre, children: [text, jsx('span', { className: 'docreader-caret' })] })
-  } else if (page?.state === 'error') {
-    right = jsx('div', { style: S.quiet, children: `this page could not be read: ${page.error || ''}` })
-  } else {
-    right = jsx('div', { style: S.quiet, children: 'not read yet' })
-  }
-
-  const left = job
-    ? jsxs('div', { style: { position: 'relative' }, children: [
-        jsx('img', { src: `${base}${job.base}/page_${shown}.jpg`, style: { width: '100%', display: 'block' }, alt: `page ${shown}` }),
-        jsx(RegionOverlay, { regions: liveRegions }),
-        page?.state === 'working' ? jsx('div', { className: 'docreader-beam' }) : null,
-      ] })
-    : jsxs('div', { style: { ...S.empty, height: '100%' }, children: [
-        jsx('div', { style: { color: 'var(--ui-text-secondary)', fontWeight: 600 }, children: 'Drop-free zone — use "Scan a document"' }),
-        jsx('div', { style: { color: 'var(--ui-text-quaternary)', fontSize: 12, textAlign: 'center', lineHeight: 1.7 },
-          children: 'or save a scanned PDF into \\\\YOUR-SERVER\\M\\OCR-Inbox. Finished Excel and text files land in OCR-Inbox\\Processed.' }),
-      ] })
-
-  const copyPath = (p, what) => {
-    if (!p) return
-    navigator.clipboard.writeText(p).then(
-      () => host.notify({ kind: 'info', message: `${what} path copied: ${p}` }),
-      () => host.notify({ kind: 'error', message: 'could not copy path' }),
-    )
-  }
-
-  const pathChip = (label, p) => p ? jsx('button', {
-    type: 'button',
-    style: { ...S.btn, padding: '2px 8px', fontSize: 11 },
-    onClick: () => copyPath(p, label),
-    onContextMenu: ev => { ev.preventDefault(); copyPath(p, label) },
-    children: `Copy ${label} path`,
-  }) : null
-
-  const hist = showHist ? jsxs('div', { style: { maxHeight: 220, overflowY: 'auto', borderTop: hair },
-    children: [
-      jsxs('div', { style: { ...S.hist, display: 'flex', alignItems: 'center', gap: 10 }, children: [
-        jsx('span', { style: { color: 'var(--ui-text-tertiary)', fontSize: 12, fontFamily: 'var(--font-mono, Consolas, monospace)' },
-          children: st.history?.[0]?.paths?.folder || 'D:\\OCR-Inbox\\Processed' }),
-        pathChip('folder', st.history?.[0]?.paths?.folder || 'D:\\OCR-Inbox\\Processed'),
-      ] }),
-      ...((st.history || []).length ? st.history.map(e =>
-        jsxs('div', {
-          style: S.hist,
-          onContextMenu: ev => { ev.preventDefault(); copyPath(e.paths?.xlsx || e.paths?.txt || e.paths?.folder, e.name) },
-          children: [
-            jsx('div', { style: { color: 'var(--ui-text-primary)', fontWeight: 500 }, children: e.name }),
-            jsx('div', { style: { color: 'var(--ui-text-quaternary)', margin: '2px 0 4px' },
-              children: `${e.when} · ${e.pages} pages · ${Math.round(e.secs)}s${e.errors ? ` · ${e.errors} page(s) failed` : ''}` }),
-            jsxs('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }, children: [
-              e.links?.xlsx ? jsx('a', { style: S.link, href: base + e.links.xlsx, children: 'Excel' }) : null,
-              jsx('a', { style: S.link, href: base + e.links.md, children: 'Text' }),
-              pathChip('Excel', e.paths?.xlsx),
-              pathChip('text', e.paths?.txt),
-            ] }),
-          ],
-        }, e.id)
-      ) : [jsx('div', { style: { ...S.hist, color: 'var(--ui-text-quaternary)' }, children: 'nothing yet' }, 'empty')]),
-    ] }) : null
+  const history = historyOpen ? jsx('div', { style: S.history, children: (state.history || []).length
+    ? state.history.map(item => jsxs('div', { style: S.row, children: [
+        jsx('div', { style: S.title, children: item.name }),
+        jsx('div', { style: { ...S.quiet, margin: '3px 0 6px' }, children: `${item.when} · ${item.pages} page${item.pages === 1 ? '' : 's'} · ${Math.round(item.secs)}s` }),
+        jsxs('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' }, children: [
+          ...Object.entries(item.files || {}).map(([kind, name]) => jsx('button', { type: 'button', style: S.button, onClick: () => void downloadAsset(ctx, item.id, name), children: `Download ${kind.toUpperCase()}` }, `${kind}:${name}`)),
+        ] }),
+      ] }, item.id))
+    : jsx('div', { style: S.row, children: 'No completed documents yet' }) }) : null
 
   return jsxs('div', {
-    style: { ...S.root, outline: dragging ? '1.5px dashed var(--ui-accent)' : 'none', outlineOffset: -6 },
-    onDragOver: e => { e.preventDefault(); e.stopPropagation(); setDragging(true) },
-    onDragLeave: e => { e.preventDefault(); setDragging(false) },
-    onDrop: e => {
-      e.preventDefault(); e.stopPropagation(); setDragging(false)
-      const files = [...(e.dataTransfer?.files || [])]
-      if (files.length) upload(files)
-    },
+    style: S.root,
+    onDragEnterCapture: onDragEnter,
+    onDragOverCapture: onDragOver,
+    onDragLeaveCapture: onDragLeave,
+    onDropCapture: onDrop,
     children: [
-    jsx('style', { children: BEAM_CSS }),
-    toolbar,
-    queueLine,
-    strip,
-    jsxs('div', { style: S.grid, children: [
-      jsxs('div', { style: S.pane, children: [
-        jsx('div', { style: S.label, children: `Scanned page${job ? ` — p.${shown}` : ''}` }),
-        left,
+      dragging ? jsx('div', { style: S.overlay, children: 'Drop up to 10 supported documents' }) : null,
+      jsxs('div', { style: S.toolbar, children: [
+        jsx('span', { style: S.title, children: job?.current_file || 'Document Reader' }),
+        jsx('span', { style: S.quiet, children: `${profile} · ${humanJobState(job?.state)}` }),
+        jsx('div', { style: S.meter, children: jsx('div', { style: { width: progress, height: '100%', background: 'var(--ui-accent)', transition: 'width .3s' } }) }),
+        jsx('button', { type: 'button', style: { ...S.button, ...S.primary }, disabled: uploading, onClick: () => openFileInput(inputRef.current), children: uploading ? 'Uploading…' : 'Scan documents' }),
+        job && !['finished', 'finished_with_errors', 'failed', 'cancelled', 'quarantined'].includes(job.state)
+          ? jsx('button', { type: 'button', style: S.button, onClick: () => void cancel(), children: 'Stop' }) : null,
+        jsx('button', { type: 'button', style: S.button, onClick: () => setHistoryOpen(value => !value), children: historyOpen ? 'Hide finished' : 'Finished files' }),
+        jsx('input', { ref: inputRef, type: 'file', accept: ACCEPT, multiple: true, style: OFFSCREEN_INPUT, tabIndex: -1, onChange: event => {
+          const files = [...(event.target.files || [])]; event.target.value = ''; if (files.length) void send(files)
+        } }),
       ] }),
-      jsxs('div', { style: S.paneR, children: [
-        jsx('div', { style: S.label,
-          children: `What the computer reads${page?.state === 'done' ? ` — p.${shown} · ${page.secs}s · ${page.chars} chars` : page?.state === 'working' ? ` — p.${shown} · reading…` : ''}` }),
-        right,
+      jsx('div', { style: S.queue, children: [
+        jsx('strong', { children: `Queue · ${active ? '1 active' : 'clear'} · ${queue.length} waiting` }),
+        ...queue.slice(0, 12).map((item, index) => jsx('span', { children: item.name }, `${index}:${item.name}`)),
+        queue.length > 12 ? jsx('span', { children: `+${queue.length - 12} more` }) : null,
       ] }),
-    ] }),
-    hist,
-  ] })
+      job ? jsx('div', { style: S.pages, children: (job.pages || []).map(page => jsx('button', { type: 'button', style: S.page(page.n === shown), onClick: () => setSelected(page.n), children: String(page.n) }, page.n)) }) : null,
+      jsxs('div', { style: S.grid, children: [
+        jsxs('div', { style: S.pane, children: [
+          jsx('div', { style: S.label, children: `Scanned page${shown ? ` · ${shown}` : ''}` }),
+          job && shown ? jsx(PageImage, { ctx, profile, jobId: job.id, page: shown }) : jsxs('div', {
+            style: { ...S.empty, cursor: 'pointer' },
+            role: 'button',
+            tabIndex: 0,
+            onClick: () => openFileInput(inputRef.current),
+            onKeyDown: event => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault(); openFileInput(inputRef.current)
+              }
+            },
+            children: [jsx('strong', { children: 'Drop documents here' }), jsx('span', { style: S.quiet, children: 'Click or press Enter · PDF, PNG, JPEG, TIFF, or BMP · 100 MiB each · 10 at a time' })],
+          }),
+        ] }),
+        jsxs('div', { style: S.right, children: [
+          jsx('div', { style: S.label, children: `Recognized text${shown ? ` · ${shown}` : ''}` }),
+          job && shown ? jsx(PageText, { ctx, profile, job, page: shown }) : jsx('div', { style: S.empty, children: 'Recognized text appears here' }),
+        ] }),
+      ] }),
+      history,
+    ],
+  })
 }
 
 export default {
   id: ID,
+  version: VERSION,
   name: 'Document Reader',
-  defaultEnabled: false, // inventories in Settings → Plugins; Jeff flips it on
+  description: `Profile-scoped Document Reader (${VERSION}) with Desktop and HUD uploads`,
+  defaultEnabled: false,
   register(ctx) {
-    ctx.i18n.register({
-      en: {
-        navLabel: 'Document Reader',
-        paletteOpen: 'Document Reader: Open',
-      },
-    })
-
+    ctx.register({ id: 'page', area: ROUTES_AREA, data: { path: '/document-reader' }, render: () => jsx(Reader, { ctx }) })
+    ctx.register({ id: 'nav', area: SIDEBAR_NAV_AREA, data: { path: '/document-reader', label: 'Document Reader', codicon: 'file-pdf' } })
+    ctx.register({ id: 'open', area: PALETTE_AREA, data: { id: 'document-reader.open', label: 'Document Reader: Open', keywords: ['ocr', 'scan', 'pdf', 'document'], run: () => host.navigate('/document-reader') } })
     ctx.register({
-      id: 'page',
-      area: ROUTES_AREA,
-      data: { path: '/document-reader' },
-      render: () => jsx(Reader, {}),
-    })
-
-    ctx.register({
-      id: 'nav',
-      area: SIDEBAR_NAV_AREA,
-      data: { path: '/document-reader', label: ctx.i18n.t('navLabel'), codicon: 'file-pdf' },
-    })
-
-    ctx.register({
-      id: 'open',
-      area: PALETTE_AREA,
-      data: {
-        id: 'document-reader.open',
-        label: ctx.i18n.t('paletteOpen'),
-        keywords: ['ocr', 'scan', 'pdf', 'document', 'reader'],
-        run: () => host.navigate('/document-reader'),
-      },
+      id: 'hud-attachment',
+      area: COMPOSER_AREAS.attachments,
+      data: { label: 'Scan with Document Reader', icon: 'file-pdf', run: ({ insertText }) => hudUpload(ctx, insertText) },
     })
   },
 }

@@ -1,0 +1,18 @@
+# The maintainer reviews every change; sensitive and release surfaces are explicit.
+* @lEWFkRAD
+/.github/ @lEWFkRAD
+/desktop-plugin/ @lEWFkRAD
+/dashboard/ @lEWFkRAD
+/engine/ @lEWFkRAD
+/engine_config.py @lEWFkRAD
+/install/ @lEWFkRAD
+/lifecycle.py @lEWFkRAD
+/mcp/ @lEWFkRAD
+/profile_runtime.py @lEWFkRAD
+/requirements.txt @lEWFkRAD
+/requirements-dev.txt @lEWFkRAD
+/scripts/ @lEWFkRAD
+/service/ @lEWFkRAD
+/plugin.yaml @lEWFkRAD
+/SECURITY.md @lEWFkRAD
+/RELEASING.md @lEWFkRAD

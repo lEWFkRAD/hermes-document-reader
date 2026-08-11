@@ -1,0 +1,25 @@
+{
+  "files": [
+    "LICENSE",
+    "README.md",
+    "__init__.py",
+    "after-install.md",
+    "cli.py",
+    "dashboard/dist/index.js",
+    "dashboard/manifest.json",
+    "dashboard/plugin_api.py",
+    "desktop-plugin/document-reader/plugin.js",
+    "engine/grm_ocr.py",
+    "engine_config.py",
+    "install/locks/windows-cpython-311-x86_64.txt",
+    "install/locks/windows-cpython-314-x86_64.txt",
+    "install/profile_service.py",
+    "install/service-requirements.txt",
+    "install/windows-task.ps1",
+    "lifecycle.py",
+    "plugin.yaml",
+    "profile_runtime.py",
+    "service/firm.html",
+    "service/ocr_service.py"
+  ]
+}

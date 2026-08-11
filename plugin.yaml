@@ -1,0 +1,8 @@
+manifest_version: 1
+name: document-reader
+version: 0.1.0
+description: "Profile-scoped document OCR for Hermes Desktop and HUD, with a guarded per-profile Windows service."
+author: "lEWFkRAD"
+kind: standalone
+platforms:
+  - windows

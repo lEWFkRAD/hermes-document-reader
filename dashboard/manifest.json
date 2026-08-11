@@ -1,0 +1,15 @@
+{
+  "name": "document-reader",
+  "label": "Document Reader",
+  "description": "Profile-scoped Document Reader bridge for Hermes Desktop and HUD",
+  "icon": "FileText",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/document-reader-api",
+    "position": "end",
+    "hidden": true
+  },
+  "slots": [],
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}

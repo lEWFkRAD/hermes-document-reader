@@ -107,7 +107,7 @@
       <div class="waiting" id="imgWait">waiting for pages…</div>
     </div>
     <div class="pane">
-      <div class="pane-label">GRM output <span id="metaRight"></span></div>
+      <div class="pane-label">Recognized text <span id="metaRight"></span></div>
       <div id="ocrOut"><div class="waiting">waiting for OCR…</div></div>
     </div>
   </main>
@@ -180,6 +180,29 @@ function esc(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+const SAFE_OCR_TAGS = new Set([
+  'P','DIV','SPAN','BR','HR','H1','H2','H3','H4','H5','H6','STRONG','B','EM','I','U','S',
+  'SMALL','BLOCKQUOTE','PRE','CODE','UL','OL','LI','TABLE','THEAD','TBODY','TFOOT','TR',
+  'TH','TD','CAPTION','SUP','SUB',
+]);
+const DROP_OCR_TAGS = new Set([
+  'SCRIPT','STYLE','IFRAME','OBJECT','EMBED','LINK','META','BASE','FORM','INPUT','BUTTON',
+  'SELECT','OPTION','TEXTAREA','SVG','MATH','AUDIO','VIDEO','SOURCE','TRACK','CANVAS','TEMPLATE',
+]);
+function sanitizeOcrHtml(html) {
+  const doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
+  for (const node of [...doc.body.querySelectorAll('*')]) {
+    if (DROP_OCR_TAGS.has(node.tagName)) { node.remove(); continue; }
+    if (!SAFE_OCR_TAGS.has(node.tagName)) { node.replaceWith(...node.childNodes); continue; }
+    for (const attr of [...node.attributes]) {
+      const key = attr.name.toLowerCase();
+      const tableAttr = ['colspan','rowspan','scope'].includes(key) && ['TH','TD'].includes(node.tagName);
+      if (!['class','data-bbox','data-label'].includes(key) && !tableAttr) node.removeAttribute(attr.name);
+    }
+  }
+  return doc.body.innerHTML;
+}
+
 async function pollPartial() {
   const p = (lastState.pages || [])[shown - 1] || {};
   const wrap = document.getElementById('imgWrap');
@@ -225,11 +248,11 @@ async function show(n, force) {
     if (finalShown === n) { updateMeta(lastState); return; }
     try {
       const html = await (await fetch(`page_${n}.html`)).text();
-      out.innerHTML = html;
+      out.innerHTML = sanitizeOcrHtml(html);
       finalShown = n;
     } catch { out.innerHTML = '<div class="waiting">could not load output</div>'; }
   } else if (p.state === 'error') {
-    out.innerHTML = `<div class="waiting">page failed: ${p.error || ''}</div>`;
+    out.innerHTML = `<div class="waiting">page failed: ${esc(String(p.error || ''))}</div>`;
   } else if (p.state === 'working') {
     if (!out.querySelector('#livePre'))
       out.innerHTML = '<pre id="livePre"><span class="caret"></span></pre>';
