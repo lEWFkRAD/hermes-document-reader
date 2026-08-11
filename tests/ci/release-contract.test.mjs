@@ -427,7 +427,7 @@ test("repository governance covers dependencies and sensitive plugin surfaces", 
   ]) {
     assert.match(owners, new RegExp(`^${sensitive.replaceAll("/", "\\/")} @lEWFkRAD$`, "m"));
   }
-  const template = await fs.readFile(".github/pull_request_template.md", "utf8");
+  const template = await fs.readFile(".github/PULL_REQUEST_TEMPLATE.md", "utf8");
   assert.match(template, /both hashed Windows locks/);
   assert.match(template, /Signed-off-by/);
 });
