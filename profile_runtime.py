@@ -33,6 +33,11 @@ PORT_SPAN = 16_000
 TOKEN_BYTES = 48
 MAX_CONFIG_BYTES = 64 * 1024
 MAX_WINDOWS_ACL_ARGUMENT_CHARS = 24_000
+MAX_WINDOWS_ACL_OUTPUT_BYTES = 256 * 1024
+WINDOWS_USER_ACL_MASK = 0x12019F
+WINDOWS_SYSTEM_ACL_MASK = 0x1F01FF
+WINDOWS_DACL_PRESENT_FLAG = 0x0004
+WINDOWS_DACL_PROTECTED_FLAG = 0x1000
 SERVICE_CONFIG_KEYS = {
     "schema",
     "plugin",
@@ -735,12 +740,27 @@ def _validate_windows_secret_acl(path: Path) -> None:
         "& { param([string]$EncodedPath) $ErrorActionPreference='Stop'; "
         "$LiteralPath=[Text.Encoding]::UTF8.GetString("
         "[Convert]::FromBase64String($EncodedPath)); "
-        "$a=Get-Acl -LiteralPath $LiteralPath -ErrorAction Stop; "
-        "$r=@($a.Access | ForEach-Object { "
-        "$s=$_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value; "
-        "[pscustomobject]@{sid=$s;type=[string]$_.AccessControlType;inherited=$_.IsInherited} }); "
-        "[pscustomobject]@{protected=$a.AreAccessRulesProtected;rules=$r} | "
-        "ConvertTo-Json -Compress -Depth 4 }"
+        "$security=[System.IO.File]::GetAccessControl($LiteralPath,"
+        "[System.Security.AccessControl.AccessControlSections]::Access); "
+        "$binary=$security.GetSecurityDescriptorBinaryForm(); "
+        "$raw=[System.Security.AccessControl.RawSecurityDescriptor]::new("
+        "$binary,0); $dacl=$raw.DiscretionaryAcl; "
+        "$nullDacl=0; $count=0; "
+        "if($null -eq $dacl){$nullDacl=1}else{$count=$dacl.Count}; "
+        "[Console]::Out.WriteLine(\"D`t$([int]$raw.ControlFlags)"
+        "`t$nullDacl`t$count\"); "
+        "if($null -ne $dacl){ for($index=0;$index -lt $dacl.Count;$index++){ "
+        "$ace=$dacl[$index]; "
+        "if($ace -is [System.Security.AccessControl.CommonAce]){ "
+        "$opaque=$ace.GetOpaque(); $opaqueLength=0; "
+        "if($null -ne $opaque){$opaqueLength=$opaque.Length}; "
+        "$callback=0; if($ace.IsCallback){$callback=1}; "
+        "[Console]::Out.WriteLine(\"C`t$([int]$ace.AceType)"
+        "`t$([int]$ace.AceFlags)`t$([int]$ace.AceQualifier)"
+        "`t$callback`t$([long]$ace.AccessMask)"
+        "`t$($ace.SecurityIdentifier.Value)`t$opaqueLength\") "
+        "}else{ [Console]::Out.WriteLine(\"X`t$([int]$ace.AceType)"
+        "`t$([int]$ace.AceFlags)`t$($ace.GetType().FullName)\") } } } }"
     )
     try:
         result = subprocess.run(
@@ -764,25 +784,63 @@ def _validate_windows_secret_acl(path: Path) -> None:
     if result.returncode != 0:
         raise ProfileRuntimeError("could not inspect the Windows ACL on the service token")
     try:
-        value = json.loads(result.stdout)
-        rules = value["rules"]
-        if isinstance(rules, dict):
-            rules = [rules]
-    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        payload = result.stdout.encode("ascii", errors="strict")
+    except UnicodeEncodeError as exc:
         raise ProfileRuntimeError("Windows returned an invalid token ACL") from exc
-    if value.get("protected") is not True or not isinstance(rules, list):
+    if not payload or len(payload) > MAX_WINDOWS_ACL_OUTPUT_BYTES:
+        raise ProfileRuntimeError("Windows returned an invalid token ACL")
+    lines = payload.decode("ascii").splitlines()
+    if not lines:
+        raise ProfileRuntimeError("Windows returned an invalid token ACL")
+    header = lines[0].split("\t")
+    if (
+        len(header) != 4
+        or header[0] != "D"
+        or not all(re.fullmatch(r"[0-9]{1,10}", field) for field in header[1:])
+    ):
+        raise ProfileRuntimeError("Windows returned an invalid token ACL")
+    control_flags, null_dacl, ace_count = map(int, header[1:])
+    if ace_count != len(lines) - 1:
+        raise ProfileRuntimeError("Windows returned an invalid token ACL")
+    if not control_flags & WINDOWS_DACL_PRESENT_FLAG or null_dacl != 0:
+        raise ProfileRuntimeError("service token DACL is missing")
+    if not control_flags & WINDOWS_DACL_PROTECTED_FLAG:
         raise ProfileRuntimeError("service token ACL inheritance is not disabled")
-    allowed = {user_sid, "S-1-5-18"}
-    seen: set[str] = set()
-    for rule in rules:
-        if not isinstance(rule, dict):
+    expected = {
+        user_sid: WINDOWS_USER_ACL_MASK,
+        "S-1-5-18": WINDOWS_SYSTEM_ACL_MASK,
+    }
+    seen: dict[str, int] = {}
+    for line in lines[1:]:
+        fields = line.split("\t")
+        if len(fields) != 8 or fields[0] != "C":
             raise ProfileRuntimeError("service token ACL rule is invalid")
-        sid = str(rule.get("sid", ""))
-        if rule.get("type") != "Allow" or rule.get("inherited") is not False or sid not in allowed:
+        (
+            _,
+            ace_type,
+            ace_flags,
+            qualifier,
+            callback,
+            raw_mask,
+            sid,
+            opaque_length,
+        ) = fields
+        if (
+            ace_type != "0"
+            or ace_flags != "0"
+            or qualifier != "0"
+            or callback != "0"
+            or opaque_length != "0"
+            or sid not in expected
+        ):
             raise ProfileRuntimeError("service token ACL contains a foreign or inherited principal")
-        seen.add(sid)
-    if seen != allowed:
+        if not re.fullmatch(r"[0-9]{1,10}", raw_mask):
+            raise ProfileRuntimeError("service token ACL rule is invalid")
+        seen[sid] = seen.get(sid, 0) | int(raw_mask)
+    if set(seen) != set(expected):
         raise ProfileRuntimeError("service token ACL is missing the current user or SYSTEM")
+    if seen != expected:
+        raise ProfileRuntimeError("service token ACL permissions are not exact")
 
 
 def _is_link_or_reparse(path: Path) -> bool:

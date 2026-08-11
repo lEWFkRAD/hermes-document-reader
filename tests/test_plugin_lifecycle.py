@@ -1203,14 +1203,12 @@ def test_windows_acl_validator_base64_roundtrips_literal_path_without_env_mutati
     sid = "S-1-5-21-100-200-300-400"
     calls = []
     parent_environment = dict(os.environ)
-    payload = json.dumps(
-        {
-            "protected": True,
-            "rules": [
-                {"sid": sid, "type": "Allow", "inherited": False},
-                {"sid": "S-1-5-18", "type": "Allow", "inherited": False},
-            ],
-        }
+    payload = (
+        "D\t4100\t0\t2\n"
+        "C\t0\t0\t0\t0\t"
+        f"{profile_runtime.WINDOWS_USER_ACL_MASK}\t{sid}\t0\n"
+        "C\t0\t0\t0\t0\t"
+        f"{profile_runtime.WINDOWS_SYSTEM_ACL_MASK}\tS-1-5-18\t0\n"
     )
 
     def record_run(command, **kwargs):
@@ -1229,9 +1227,88 @@ def test_windows_acl_validator_base64_roundtrips_literal_path_without_env_mutati
         "-NonInteractive",
         "-Command",
     ]
+    assert "get-acl" not in command[4].lower()
+    assert "convertto-json" not in command[4].lower()
+    assert "foreach-object" not in command[4].lower()
+    assert "[System.IO.File]::GetAccessControl" in command[4]
+    assert "RawSecurityDescriptor" in command[4]
+    assert "[Console]::Out.WriteLine" in command[4]
     assert base64.b64decode(command[-1]).decode("utf-8") == str(path)
     assert "env" not in kwargs
     assert dict(os.environ) == parent_environment
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows ACL validation contract")
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    (
+        ("D\t4\t0\t0\n", "inheritance is not disabled"),
+        ("D\t4100\t1\t0\n", "DACL is missing"),
+        (
+            "D\t4100\t0\t1\n"
+            "C\t1\t0\t1\t0\t1\tS-1-5-21-100-200-300-400\t0\n",
+            "foreign or inherited principal",
+        ),
+        (
+            "D\t4100\t0\t1\n"
+            "C\t0\t16\t0\t0\t1\tS-1-5-21-100-200-300-400\t0\n",
+            "foreign or inherited principal",
+        ),
+        (
+            "D\t4100\t0\t1\n"
+            "C\t0\t0\t0\t1\t1\tS-1-5-21-100-200-300-400\t0\n",
+            "foreign or inherited principal",
+        ),
+        ("D\t4100\t0\t1\nX\t5\t0\tSystem.Security.AccessControl.ObjectAce\n", "rule is invalid"),
+        (
+            "D\t4100\t0\t2\n"
+            "C\t0\t0\t0\t0\t1\tS-1-5-21-100-200-300-400\t0\n"
+            f"C\t0\t0\t0\t0\t{profile_runtime.WINDOWS_SYSTEM_ACL_MASK}"
+            "\tS-1-5-18\t0\n",
+            "permissions are not exact",
+        ),
+    ),
+)
+def test_windows_acl_validator_rejects_noncanonical_raw_dacl(
+    monkeypatch, payload, message
+):
+    sid = "S-1-5-21-100-200-300-400"
+
+    monkeypatch.setattr(profile_runtime, "_current_windows_sid", lambda: sid)
+    monkeypatch.setattr(
+        profile_runtime.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 0, payload, ""
+        ),
+    )
+
+    with pytest.raises(profile_runtime.ProfileRuntimeError, match=message):
+        NATIVE_WINDOWS_ACL_VALIDATOR(Path("C:/safe/profile/token"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows ACL validation contract")
+def test_windows_acl_validator_accepts_split_duplicate_exact_masks(monkeypatch):
+    sid = "S-1-5-21-100-200-300-400"
+    payload = (
+        "D\t4100\t0\t5\n"
+        f"C\t0\t0\t0\t0\t{0x120000}\t{sid}\t0\n"
+        f"C\t0\t0\t0\t0\t{0x019F}\t{sid}\t0\n"
+        f"C\t0\t0\t0\t0\t{0x019F}\t{sid}\t0\n"
+        f"C\t0\t0\t0\t0\t{0x1F0000}\tS-1-5-18\t0\n"
+        f"C\t0\t0\t0\t0\t{0x01FF}\tS-1-5-18\t0\n"
+    )
+
+    monkeypatch.setattr(profile_runtime, "_current_windows_sid", lambda: sid)
+    monkeypatch.setattr(
+        profile_runtime.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 0, payload, ""
+        ),
+    )
+
+    NATIVE_WINDOWS_ACL_VALIDATOR(Path("C:/safe/profile/token"))
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows ACL validation contract")
