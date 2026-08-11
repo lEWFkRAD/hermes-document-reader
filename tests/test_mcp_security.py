@@ -431,18 +431,30 @@ class McpInputBoundaryTest(unittest.TestCase):
         output = self.inbox / "worker-output.md"
         expected = b"approved"
         source.write_bytes(b"replaced")
-        with mock.patch.object(mcp_module.anydoc, "to_markdown_bytes") as converter:
-            code = mcp_module._local_worker(
+        completed = mcp_module.subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                str(ROOT / "mcp" / "anydoc-mcp.py"),
+                "--local-worker",
                 str(source),
                 ".txt",
                 str(output),
-                2000,
-                256 * 1024 * 1024,
-                len(expected),
+                "2000",
+                str(256 * 1024 * 1024),
+                str(len(expected)),
                 hashlib.sha256(expected).hexdigest(),
-            )
-        self.assertEqual(code, 68)
-        converter.assert_not_called()
+            ],
+            cwd=str(self.inbox),
+            env=mcp_module._worker_environment(),
+            stdin=mcp_module.subprocess.DEVNULL,
+            stdout=mcp_module.subprocess.DEVNULL,
+            stderr=mcp_module.subprocess.DEVNULL,
+            close_fds=True,
+            timeout=60,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 68)
         self.assertFalse(output.exists())
 
     def test_actual_worker_ignores_a_hostile_pythonpath(self):

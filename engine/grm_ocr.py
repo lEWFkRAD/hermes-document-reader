@@ -248,6 +248,17 @@ def _stat_signature(info) -> tuple[int, int, int, int, int]:
     )
 
 
+def _same_path_handle_identity(path_info, handle_info) -> bool:
+    """Compare pathname and open-handle stats without NTFS ctime drift."""
+
+    path_signature = _stat_signature(path_info)
+    handle_signature = _stat_signature(handle_info)
+    if os.name == "nt":
+        path_signature = path_signature[:-1]
+        handle_signature = handle_signature[:-1]
+    return path_signature == handle_signature
+
+
 def read_regular_bytes(
     path: Path,
     *,
@@ -283,7 +294,7 @@ def read_regular_bytes(
     try:
         opened = os.fstat(descriptor)
         if (
-            not os.path.samestat(before, opened)
+            not _same_path_handle_identity(before, opened)
             or not stat.S_ISREG(opened.st_mode)
             or _is_link_or_reparse_info(opened)
             or opened.st_size <= 0

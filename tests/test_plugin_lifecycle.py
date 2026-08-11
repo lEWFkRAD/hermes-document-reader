@@ -100,6 +100,15 @@ def _mock_environment(monkeypatch, contract):
     )
 
 
+def _mock_supported_windows_runtime(monkeypatch):
+    contract = dict(_runtime_attestation()["contract"])
+    monkeypatch.setattr(
+        lifecycle, "_current_runtime_contract", lambda: dict(contract)
+    )
+    _mock_environment(monkeypatch, contract)
+    return contract
+
+
 def _release(runtime, release_id: str) -> lifecycle.Release:
     root = runtime.releases_dir / release_id
     entry = root / "install" / "profile_service.py"
@@ -142,8 +151,7 @@ def test_stage_release_uses_one_immutable_service_and_desktop_snapshot(
     runtime = _runtime(tmp_path / "hermes")
     source_root = tmp_path / "source"
     original = _release_source(source_root)
-    contract = lifecycle._current_runtime_contract()
-    _mock_environment(monkeypatch, contract)
+    contract = _mock_supported_windows_runtime(monkeypatch)
 
     def provision(temporary, expected_contract, lock_file, lock_sha):
         # Simulate a checkout/plugin update during the long dependency install.
@@ -220,8 +228,7 @@ def test_resolved_dependency_set_is_part_of_release_identity(monkeypatch, tmp_pa
     _release_source(source_root)
     artifact_hashes = iter(("1" * 64, "2" * 64))
     active = {"attestation": None}
-    contract = lifecycle._current_runtime_contract()
-    _mock_environment(monkeypatch, contract)
+    contract = _mock_supported_windows_runtime(monkeypatch)
 
     def provision(temporary, expected_contract, lock_file, lock_sha):
         python = lifecycle._release_python(temporary)
@@ -302,6 +309,7 @@ def test_interpreter_cache_tag_is_part_of_release_identity(monkeypatch, tmp_path
     assert first.root != second.root
 
 
+@pytest.mark.skipif(os.name != "nt", reason="live Windows runtime contract")
 def test_runtime_contract_uses_build_metadata_under_sanitized_environment(monkeypatch):
     monkeypatch.delenv("PROCESSOR_ARCHITECTURE", raising=False)
     monkeypatch.delenv("PROCESSOR_ARCHITEW6432", raising=False)
@@ -318,7 +326,7 @@ def test_existing_release_refuses_installed_content_drift(monkeypatch, tmp_path)
     runtime = _runtime(tmp_path / "hermes")
     source_root = tmp_path / "source"
     _release_source(source_root)
-    contract = lifecycle._current_runtime_contract()
+    contract = _mock_supported_windows_runtime(monkeypatch)
     environment_hashes = iter(("e" * 64, "f" * 64))
     monkeypatch.setattr(lifecycle, "_interpreter_contract", lambda python: dict(contract))
     monkeypatch.setattr(
@@ -347,8 +355,7 @@ def test_identical_clean_provisions_reuse_exact_release_identity(monkeypatch, tm
     runtime = _runtime(tmp_path / "hermes")
     source_root = tmp_path / "source"
     _release_source(source_root)
-    contract = lifecycle._current_runtime_contract()
-    _mock_environment(monkeypatch, contract)
+    contract = _mock_supported_windows_runtime(monkeypatch)
 
     def provision(temporary, expected_contract, lock_file, lock_sha):
         python = lifecycle._release_python(temporary)
@@ -474,6 +481,7 @@ def test_pip_report_artifact_hash_must_be_selected_by_lock(tmp_path):
         )
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows private runtime bootstrap contract")
 def test_private_venv_bootstraps_bundled_pip_only_into_owned_prefix(tmp_path):
     import ensurepip
 
@@ -739,6 +747,7 @@ def test_installed_content_attestation_is_independent_of_walk_order(tmp_path):
     assert attest(normal_prelude) == attest(reversed_prelude)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows service Scripts contract")
 def test_distribution_entrypoint_removal_rejects_record_mismatch(tmp_path):
     runtime_root = tmp_path / "runtime"
     venv.EnvBuilder(with_pip=False, symlinks=False).create(runtime_root)
@@ -781,6 +790,7 @@ def test_scheduled_service_uses_isolated_interpreter_mode(tmp_path):
     assert "$expectedArguments = '-B -I -S -u \"'" in task_script
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows service shim contract")
 def test_private_service_shim_does_not_execute_pth_or_sitecustomize(tmp_path):
     release = tmp_path / "release"
     runtime_root = release / ".venv"
@@ -835,6 +845,7 @@ def test_private_service_shim_does_not_execute_pth_or_sitecustomize(tmp_path):
     assert not marker.exists()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows service runtime layout contract")
 def test_checked_hash_bytecode_is_stable_across_clean_recompile(tmp_path):
     runtime_root = tmp_path / "runtime"
     venv.EnvBuilder(with_pip=False, symlinks=False).create(runtime_root)
@@ -864,8 +875,7 @@ def test_stage_release_recovers_only_exact_receipted_orphan(monkeypatch, tmp_pat
     )
     stage.mkdir()
     (stage / "orphaned.partial").write_bytes(b"partial")
-    contract = lifecycle._current_runtime_contract()
-    _mock_environment(monkeypatch, contract)
+    contract = _mock_supported_windows_runtime(monkeypatch)
 
     def provision(temporary, expected_contract, lock_file, lock_sha):
         assert not (temporary / "orphaned.partial").exists()

@@ -242,7 +242,7 @@ def _read_input(approved: ApprovedInput) -> bytes:
     try:
         opened = os.fstat(descriptor)
         if (
-            not os.path.samestat(approved.file_info, opened)
+            not grm_ocr._same_path_handle_identity(approved.file_info, opened)
             or not stat.S_ISREG(opened.st_mode)
             or grm_ocr._is_link_or_reparse_info(opened)
             or opened.st_size <= 0
