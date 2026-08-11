@@ -422,13 +422,170 @@ def create_profile_directories(runtime: ProfileRuntime) -> None:
         _contained(runtime.home, path, "profile directory").mkdir(parents=True, exist_ok=True)
 
 
+def _unlink_exact_regular(path: Path, expected: os.stat_result, label: str) -> None:
+    try:
+        current = path.lstat()
+    except OSError as exc:
+        raise ProfileRuntimeError(f"cannot inspect {label}: {exc}") from exc
+    if (
+        _is_link_or_reparse(path)
+        or not stat.S_ISREG(current.st_mode)
+        or not os.path.samestat(expected, current)
+    ):
+        raise ProfileRuntimeError(f"{label} identity changed before cleanup")
+    try:
+        path.unlink()
+    except OSError as exc:
+        raise ProfileRuntimeError(f"cannot remove {label}: {exc}") from exc
+
+
+def _preserve_private_windows_destination(
+    path: Path, expected: os.stat_result
+) -> tuple[Path, os.stat_result]:
+    _reject_reparse_chain(path)
+    try:
+        before = path.lstat()
+    except OSError as exc:
+        raise ProfileRuntimeError(f"cannot inspect existing private file: {exc}") from exc
+    if (
+        _is_link_or_reparse(path)
+        or not stat.S_ISREG(before.st_mode)
+        or not os.path.samestat(expected, before)
+    ):
+        raise ProfileRuntimeError("existing private file identity changed before backup")
+    _validate_windows_secret_acl(path)
+    try:
+        after_acl = path.lstat()
+    except OSError as exc:
+        raise ProfileRuntimeError(
+            f"cannot re-attest existing private file: {exc}"
+        ) from exc
+    _reject_reparse_chain(path)
+    if _is_link_or_reparse(path) or not os.path.samestat(before, after_acl):
+        raise ProfileRuntimeError("existing private file changed during ACL validation")
+
+    backup = path.with_name(f".{path.name}.private-backup")
+    try:
+        os.link(path, backup, follow_symlinks=False)
+    except FileExistsError as exc:
+        raise ProfileRuntimeError(
+            "an unresolved private-file backup blocks this write"
+        ) from exc
+    except OSError as exc:
+        raise ProfileRuntimeError(
+            f"cannot preserve existing private file: {exc}"
+        ) from exc
+
+    try:
+        backup_info = backup.lstat()
+        current = path.lstat()
+        if (
+            _is_link_or_reparse(backup)
+            or _is_link_or_reparse(path)
+            or not stat.S_ISREG(backup_info.st_mode)
+            or not os.path.samestat(before, backup_info)
+            or not os.path.samestat(before, current)
+        ):
+            raise ProfileRuntimeError(
+                "existing private file changed while its backup was created"
+            )
+        return backup, backup_info
+    except Exception:
+        try:
+            backup_info = backup.lstat()
+            if (
+                not _is_link_or_reparse(backup)
+                and os.path.samestat(before, backup_info)
+            ):
+                backup.unlink(missing_ok=True)
+        except (OSError, ProfileRuntimeError):
+            pass
+        raise
+
+
+def _recover_private_windows_destination(
+    path: Path,
+    backup: Path,
+    previous: os.stat_result,
+) -> None:
+    _reject_reparse_chain(backup)
+    try:
+        backup_info = backup.lstat()
+    except OSError as exc:
+        raise ProfileRuntimeError(f"cannot inspect private-file backup: {exc}") from exc
+    if (
+        _is_link_or_reparse(backup)
+        or not stat.S_ISREG(backup_info.st_mode)
+        or not os.path.samestat(previous, backup_info)
+    ):
+        raise ProfileRuntimeError("private-file backup identity changed before recovery")
+    _validate_windows_secret_acl(backup)
+    final_backup_info = backup.lstat()
+    if _is_link_or_reparse(backup) or not os.path.samestat(
+        backup_info, final_backup_info
+    ):
+        raise ProfileRuntimeError("private-file backup changed during ACL validation")
+
+    if os.path.lexists(path):
+        current = path.lstat()
+        if (
+            _is_link_or_reparse(path)
+            or not stat.S_ISREG(current.st_mode)
+            or not os.path.samestat(previous, current)
+        ):
+            raise ProfileRuntimeError(
+                "refusing to overwrite a foreign path during private-file recovery"
+            )
+        _validate_windows_secret_acl(path)
+    else:
+        try:
+            os.link(backup, path, follow_symlinks=False)
+        except OSError as exc:
+            raise ProfileRuntimeError(
+                f"cannot restore previous private file: {exc}"
+            ) from exc
+        restored = path.lstat()
+        if (
+            _is_link_or_reparse(path)
+            or not stat.S_ISREG(restored.st_mode)
+            or not os.path.samestat(previous, restored)
+        ):
+            raise ProfileRuntimeError(
+                "restored private file does not match its preserved identity"
+            )
+        _validate_windows_secret_acl(path)
+        final_restored = path.lstat()
+        if _is_link_or_reparse(path) or not os.path.samestat(
+            restored, final_restored
+        ):
+            raise ProfileRuntimeError(
+                "restored private file changed during ACL validation"
+            )
+
+    _unlink_exact_regular(backup, previous, "private-file backup")
+
+
 def atomic_write_bytes(path: Path, data: bytes, *, mode: int | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     _reject_reparse_chain(path.parent)
-    if os.path.lexists(path) and _is_link_or_reparse(path):
-        raise ProfileRuntimeError(f"refusing to replace link/reparse-point file: {path}")
+    private_windows_file = os.name == "nt" and mode == 0o600
+    if private_windows_file and os.path.lexists(
+        path.with_name(f".{path.name}.private-backup")
+    ):
+        raise ProfileRuntimeError(
+            "an unresolved private-file backup blocks this write"
+        )
+    initial_info = None
+    if os.path.lexists(path):
+        initial_info = path.lstat()
+        if _is_link_or_reparse(path):
+            raise ProfileRuntimeError(f"refusing to replace link/reparse-point file: {path}")
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     temporary_path = Path(temporary)
+    temporary_info = None
+    published_info = None
+    previous_backup = None
+    previous_info = None
     try:
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
@@ -436,9 +593,75 @@ def atomic_write_bytes(path: Path, data: bytes, *, mode: int | None = None) -> N
             os.fsync(handle.fileno())
         if mode is not None:
             os.chmod(temporary_path, mode)
-            if os.name == "nt" and mode == 0o600:
+            if private_windows_file:
                 _harden_windows_secret_acl(temporary_path)
-        os.replace(temporary_path, path)
+                temporary_info = temporary_path.lstat()
+                if _is_link_or_reparse(temporary_path) or not stat.S_ISREG(
+                    temporary_info.st_mode
+                ):
+                    raise ProfileRuntimeError(
+                        "private temporary file changed while its ACL was hardened"
+                    )
+        if private_windows_file:
+            if initial_info is None:
+                if os.path.lexists(path):
+                    raise ProfileRuntimeError(
+                        "private destination appeared while its write was prepared"
+                    )
+            else:
+                previous_backup, previous_info = (
+                    _preserve_private_windows_destination(path, initial_info)
+                )
+        try:
+            os.replace(temporary_path, path)
+            if private_windows_file:
+                candidate_info = path.lstat()
+                if (
+                    temporary_info is None
+                    or _is_link_or_reparse(path)
+                    or not os.path.samestat(temporary_info, candidate_info)
+                ):
+                    raise ProfileRuntimeError(
+                        "private file identity changed while it was published"
+                    )
+                published_info = candidate_info
+
+                # A rename normally preserves the source security descriptor,
+                # but that is not a portable filesystem guarantee.  Hosted
+                # Windows runners can reapply the destination directory's
+                # inherited DACL while publishing a temporary file.  Harden
+                # and attest the public path itself before returning it.
+                _harden_windows_secret_acl(path)
+                final_info = path.lstat()
+                if _is_link_or_reparse(path) or not os.path.samestat(
+                    published_info, final_info
+                ):
+                    raise ProfileRuntimeError(
+                        "private file identity changed while its published ACL was hardened"
+                    )
+
+                if previous_backup is not None and previous_info is not None:
+                    _unlink_exact_regular(
+                        previous_backup, previous_info, "private-file backup"
+                    )
+                    previous_backup = None
+        except Exception as original:
+            if private_windows_file:
+                try:
+                    if published_info is not None:
+                        _unlink_exact_regular(
+                            path, published_info, "failed private publication"
+                        )
+                    if previous_backup is not None and previous_info is not None:
+                        _recover_private_windows_destination(
+                            path, previous_backup, previous_info
+                        )
+                        previous_backup = None
+                except Exception as recovery_error:
+                    raise ProfileRuntimeError(
+                        "private write failed and its previous file could not be restored"
+                    ) from recovery_error
+            raise original
     finally:
         temporary_path.unlink(missing_ok=True)
 
@@ -474,17 +697,42 @@ def _harden_windows_secret_acl(path: Path) -> None:
     if os.name != "nt":
         return
     user_sid = _current_windows_sid()
-    command = [
-        "icacls",
-        str(path),
-        "/inheritance:r",
-        "/grant:r",
-        f"*{user_sid}:(R,W)",
-        "*S-1-5-18:(F)",
-    ]
-    result = subprocess.run(command, capture_output=True, text=True, timeout=15, check=False)
+    script = (
+        "& { param([string]$LiteralPath,[string]$UserSid) "
+        "$ErrorActionPreference='Stop'; "
+        "$a=Get-Acl -LiteralPath $LiteralPath; "
+        "$a.SetAccessRuleProtection($true,$false); "
+        "foreach($rule in @($a.Access)){[void]$a.RemoveAccessRuleSpecific($rule)}; "
+        "$allow=[Security.AccessControl.AccessControlType]::Allow; "
+        "$user=New-Object Security.Principal.SecurityIdentifier($UserSid); "
+        "$system=New-Object Security.Principal.SecurityIdentifier('S-1-5-18'); "
+        "$userRights=[Security.AccessControl.FileSystemRights]::Read -bor "
+        "[Security.AccessControl.FileSystemRights]::Write; "
+        "$userRule=New-Object Security.AccessControl.FileSystemAccessRule"
+        "($user,$userRights,$allow); "
+        "$systemRule=New-Object Security.AccessControl.FileSystemAccessRule"
+        "($system,[Security.AccessControl.FileSystemRights]::FullControl,$allow); "
+        "$a.AddAccessRule($userRule); $a.AddAccessRule($systemRule); "
+        "Set-Acl -LiteralPath $LiteralPath -AclObject $a }"
+    )
+    result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            script,
+            str(path),
+            user_sid,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
     if result.returncode != 0:
         raise ProfileRuntimeError("could not restrict the Windows ACL on the service token")
+    _validate_windows_secret_acl(path)
 
 
 def _validate_windows_secret_acl(path: Path) -> None:

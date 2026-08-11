@@ -18,6 +18,7 @@ from PIL import Image
 import engine_config as lifecycle_engine_config
 from profile_runtime import (
     ProfileRuntimeError,
+    _harden_windows_secret_acl,
     atomic_write_json,
     create_profile_directories,
     resolve_profile_runtime,
@@ -1103,12 +1104,7 @@ class EngineConfigurationTest(unittest.TestCase):
                         runtime.engine_config_file, runtime.engine_token_file
                     )
             finally:
-                write_private_single_line(
-                    runtime.engine_token_file,
-                    "profile-secret-value",
-                    minimum=16,
-                    maximum=2048,
-                )
+                _harden_windows_secret_acl(runtime.engine_token_file)
 
 
 class ServiceConfigurationTest(unittest.TestCase):

@@ -760,17 +760,36 @@ import os, runpy, stat, sys
 from pathlib import Path
 if not (sys.flags.isolated and sys.flags.no_site and sys.flags.dont_write_bytecode):
     raise SystemExit("private runtime runner requires -B -I -S")
-runtime_root = Path(sys.executable).resolve(strict=True).parents[1]
-site_packages = runtime_root / "Lib" / "site-packages"
+if len(sys.argv) < 4 or sys.argv[2] not in {"module", "code"}:
+    raise SystemExit("invalid private runtime operation")
+runtime_root = Path(sys.argv[1]).resolve(strict=True)
+configuration = runtime_root / "pyvenv.cfg"
+if os.name == "nt":
+    expected_executable = runtime_root / "Scripts" / "python.exe"
+    library_root = runtime_root / "Lib"
+else:
+    expected_executable = runtime_root / "bin" / "python"
+    library_root = runtime_root / "lib" / ("python%d.%d" % sys.version_info[:2])
+site_packages = library_root / "site-packages"
 reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-for candidate in (runtime_root, runtime_root / "Lib", site_packages):
+for candidate in (runtime_root, library_root, site_packages):
     info = os.lstat(candidate)
     if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & reparse:
         raise SystemExit("private runtime contains a link/reparse directory")
+for candidate in (expected_executable, configuration):
+    info = os.lstat(candidate)
+    if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & reparse:
+        raise SystemExit("private runtime identity is invalid")
+if not os.path.samefile(expected_executable, sys.executable):
+    raise SystemExit("private runtime interpreter is not owned by the expected environment")
+if configuration.stat().st_size > 16 * 1024:
+    raise SystemExit("private runtime pyvenv configuration is oversized")
+if "include-system-site-packages = false" not in configuration.read_text(
+    encoding="utf-8", errors="strict"
+).casefold():
+    raise SystemExit("private runtime does not disable system site packages")
 sys.path.append(str(site_packages))
-if len(sys.argv) < 3 or sys.argv[1] not in {"module", "code"}:
-    raise SystemExit("invalid private runtime operation")
-mode, payload, arguments = sys.argv[1], sys.argv[2], sys.argv[3:]
+mode, payload, arguments = sys.argv[2], sys.argv[3], sys.argv[4:]
 if mode == "module":
     sys.argv = [payload, *arguments]
     runpy.run_module(payload, run_name="__main__", alter_sys=False)
@@ -855,6 +874,30 @@ def _private_runtime_command(
         raise LifecycleError("private runtime command requires exactly one operation")
     if module is not None and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]{0,127}", module):
         raise LifecycleError("private runtime module name is invalid")
+    expected_directory = "Scripts" if os.name == "nt" else "bin"
+    expected_name = "python.exe" if os.name == "nt" else "python"
+    if (
+        python.parent.name.casefold() != expected_directory.casefold()
+        or python.name.casefold() != expected_name.casefold()
+    ):
+        raise LifecycleError(
+            "private runtime interpreter must use an owned virtual-environment layout"
+        )
+    runtime_root = python.parent.parent
+    configuration = runtime_root / "pyvenv.cfg"
+    try:
+        executable_info = os.lstat(python)
+        configuration_info = os.lstat(configuration)
+    except OSError as exc:
+        raise LifecycleError("private runtime identity could not be inspected") from exc
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    for info in (executable_info, configuration_info):
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or stat.S_ISLNK(info.st_mode)
+            or getattr(info, "st_file_attributes", 0) & reparse
+        ):
+            raise LifecycleError("private runtime identity is invalid")
     mode = "module" if module is not None else "code"
     payload = module if module is not None else str(code)
     return [
@@ -864,6 +907,7 @@ def _private_runtime_command(
         "-S",
         "-c",
         PRIVATE_RUNTIME_RUNNER_SCRIPT,
+        str(runtime_root),
         mode,
         str(payload),
         *[str(item) for item in arguments],

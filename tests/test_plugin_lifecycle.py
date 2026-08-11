@@ -361,11 +361,26 @@ def test_identical_clean_provisions_reuse_exact_release_identity(monkeypatch, tm
 
 
 def test_python_subprocess_isolation_ignores_hostile_pythonpath(monkeypatch, tmp_path):
+    runtime_root = tmp_path / "private-runtime"
+    venv.EnvBuilder(with_pip=False, symlinks=False).create(runtime_root)
+    python = runtime_root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    site_packages = runtime_root / (
+        "Lib/site-packages"
+        if os.name == "nt"
+        else f"lib/python{os.sys.version_info.major}.{os.sys.version_info.minor}/site-packages"
+    )
     fake = tmp_path / "hostile"
-    package = fake / "pip"
-    package.mkdir(parents=True)
-    (package / "__init__.py").write_text(
-        "raise RuntimeError('hostile pip imported')\n", encoding="utf-8"
+    fake.mkdir()
+    (fake / "document_reader_isolation_probe.py").write_text(
+        "raise RuntimeError('hostile module imported')\n", encoding="utf-8"
+    )
+    (site_packages / "document_reader_isolation_probe.py").write_text(
+        "VALUE = 'owned-runtime'\n", encoding="utf-8"
+    )
+    (site_packages / "hostile-hook.pth").write_text(
+        str(fake)
+        + "\nimport os; os.environ['DOCUMENT_READER_HOSTILE_PTH'] = 'executed'\n",
+        encoding="utf-8",
     )
     monkeypatch.setenv("PYTHONPATH", str(fake))
     monkeypatch.setenv("PYTHONHOME", str(fake))
@@ -375,9 +390,15 @@ def test_python_subprocess_isolation_ignores_hostile_pythonpath(monkeypatch, tmp
     assert "PYTHONHOME" not in environment
     assert "PYTHONUSERBASE" not in environment
     command = lifecycle._private_runtime_command(
-        Path(os.sys.executable), code="import pip; print(pip.__file__)"
+        python,
+        code=(
+            "import os, document_reader_isolation_probe as probe;"
+            "print(probe.VALUE);"
+            "print(os.environ.get('DOCUMENT_READER_HOSTILE_PTH', 'not-executed'))"
+        ),
     )
     assert command[1:5] == ["-B", "-I", "-S", "-c"]
+    assert command[6] == str(runtime_root)
     result = subprocess.run(
         command,
         capture_output=True,
@@ -385,8 +406,20 @@ def test_python_subprocess_isolation_ignores_hostile_pythonpath(monkeypatch, tmp
         check=False,
         env=environment,
     )
-    assert result.returncode == 0
-    assert str(fake).lower() not in result.stdout.lower()
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == ["owned-runtime", "not-executed"]
+
+
+@pytest.mark.parametrize("version", ("3.11.9", "3.14.0"))
+def test_private_runtime_command_rejects_setup_python_base_layout(version):
+    hosted_python = Path(
+        f"C:/hostedtoolcache/windows/Python/{version}/x64/python.exe"
+    )
+    with pytest.raises(
+        lifecycle.LifecycleError,
+        match="owned virtual-environment layout",
+    ):
+        lifecycle._private_runtime_command(hosted_python, code="pass")
 
 
 def test_shipped_runtime_locks_have_exact_identical_seeded_inventory():
@@ -1112,6 +1145,126 @@ def test_service_token_creation_rejects_foreign_acl_postcondition(monkeypatch, t
     with pytest.raises(profile_runtime.ProfileRuntimeError, match="foreign ACL"):
         profile_runtime.ensure_profile_token(runtime)
     assert not runtime.token_file.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows ACL publication contract")
+def test_private_atomic_publish_rehardens_acl_when_replace_drops_it(
+    monkeypatch, tmp_path
+):
+    path = (tmp_path / "engine.token").resolve()
+    hardened: set[Path] = set()
+    harden_calls: list[Path] = []
+    real_replace = profile_runtime.os.replace
+
+    def record_harden(selected):
+        selected = Path(selected)
+        harden_calls.append(selected)
+        hardened.add(selected)
+
+    def drop_acl_on_replace(source, destination):
+        real_replace(source, destination)
+        # GitHub's hosted Windows temp filesystem exposed this behavior: the
+        # published path inherited from its parent even though the sibling
+        # temporary file had already been protected.
+        hardened.discard(Path(source))
+        hardened.discard(Path(destination))
+
+    def require_protected(selected):
+        if Path(selected) not in hardened:
+            raise profile_runtime.ProfileRuntimeError(
+                "service token ACL inheritance is not disabled"
+            )
+
+    monkeypatch.setattr(
+        profile_runtime, "_harden_windows_secret_acl", record_harden
+    )
+    monkeypatch.setattr(
+        profile_runtime, "_validate_windows_secret_acl", require_protected
+    )
+    monkeypatch.setattr(profile_runtime.os, "replace", drop_acl_on_replace)
+
+    profile_runtime.write_private_single_line(
+        path, "profile-secret-value", minimum=16, maximum=2048
+    )
+
+    assert path in hardened
+    assert len(harden_calls) == 2
+    assert harden_calls[0] != path
+    assert harden_calls[1] == path
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows ACL publication contract")
+def test_private_atomic_publish_removes_its_file_when_final_acl_hardening_fails(
+    monkeypatch, tmp_path
+):
+    path = (tmp_path / "engine.token").resolve()
+    calls = 0
+
+    def fail_public_hardening(selected):
+        nonlocal calls
+        calls += 1
+        if Path(selected) == path:
+            raise profile_runtime.ProfileRuntimeError("published ACL rejected")
+
+    monkeypatch.setattr(
+        profile_runtime, "_harden_windows_secret_acl", fail_public_hardening
+    )
+
+    with pytest.raises(profile_runtime.ProfileRuntimeError, match="published ACL"):
+        profile_runtime.atomic_write_bytes(
+            path, b"profile-secret-value\n", mode=0o600
+        )
+
+    assert calls == 2
+    assert not path.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows ACL publication contract")
+def test_private_atomic_publish_restores_exact_existing_journal_on_acl_failure(
+    monkeypatch, tmp_path
+):
+    path = (tmp_path / "transaction.json").resolve()
+    previous = b'{"phase":"prepared","profile":"work"}\n'
+    replacement = b'{"phase":"token_written","profile":"work"}\n'
+    profile_runtime.atomic_write_bytes(path, previous, mode=0o600)
+    previous_info = path.lstat()
+
+    def reject_published_acl(selected):
+        if Path(selected) == path:
+            raise profile_runtime.ProfileRuntimeError("published ACL rejected")
+
+    monkeypatch.setattr(
+        profile_runtime, "_harden_windows_secret_acl", reject_published_acl
+    )
+
+    with pytest.raises(profile_runtime.ProfileRuntimeError, match="published ACL"):
+        profile_runtime.atomic_write_bytes(path, replacement, mode=0o600)
+
+    assert path.read_bytes() == previous
+    assert os.path.samestat(previous_info, path.lstat())
+    assert not path.with_name(f".{path.name}.private-backup").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows ACL publication contract")
+def test_private_atomic_publish_fails_closed_on_crash_backup_residue(tmp_path):
+    path = (tmp_path / "transaction.json").resolve()
+    previous = b'{"phase":"prepared","profile":"work"}\n'
+    profile_runtime.atomic_write_bytes(path, previous, mode=0o600)
+    previous_info = path.lstat()
+    backup = path.with_name(f".{path.name}.private-backup")
+    os.link(path, backup, follow_symlinks=False)
+
+    with pytest.raises(
+        profile_runtime.ProfileRuntimeError,
+        match="unresolved private-file backup",
+    ):
+        profile_runtime.atomic_write_bytes(
+            path, b'{"phase":"token_written","profile":"work"}\n', mode=0o600
+        )
+
+    assert path.read_bytes() == previous
+    assert os.path.samestat(previous_info, path.lstat())
+    assert os.path.samestat(previous_info, backup.lstat())
 
 
 def test_remote_mcp_consent_is_explicit_atomic_and_profile_bound(tmp_path):
