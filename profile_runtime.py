@@ -7,6 +7,7 @@ every command/API request must resolve its context when it runs.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -31,6 +32,7 @@ PORT_BASE = 28_000
 PORT_SPAN = 16_000
 TOKEN_BYTES = 48
 MAX_CONFIG_BYTES = 64 * 1024
+MAX_WINDOWS_ACL_ARGUMENT_CHARS = 24_000
 SERVICE_CONFIG_KEYS = {
     "schema",
     "plugin",
@@ -721,13 +723,18 @@ def _validate_windows_secret_acl(path: Path) -> None:
     if os.name != "nt":
         return
     user_sid = _current_windows_sid()
-    environment = dict(os.environ)
-    environment["HERMES_DOCUMENT_READER_ACL_PATH"] = str(path)
+    try:
+        encoded_path = base64.b64encode(
+            str(path).encode("utf-8", errors="strict")
+        ).decode("ascii")
+    except UnicodeEncodeError as exc:
+        raise ProfileRuntimeError("Windows ACL path cannot be encoded safely") from exc
+    if len(encoded_path) > MAX_WINDOWS_ACL_ARGUMENT_CHARS:
+        raise ProfileRuntimeError("Windows ACL path is too long to validate safely")
     script = (
-        "& { $ErrorActionPreference='Stop'; "
-        "$LiteralPath=[Environment]::GetEnvironmentVariable("
-        "'HERMES_DOCUMENT_READER_ACL_PATH','Process'); "
-        "if([string]::IsNullOrEmpty($LiteralPath)){throw 'ACL path is missing'}; "
+        "& { param([string]$EncodedPath) $ErrorActionPreference='Stop'; "
+        "$LiteralPath=[Text.Encoding]::UTF8.GetString("
+        "[Convert]::FromBase64String($EncodedPath)); "
         "$a=Get-Acl -LiteralPath $LiteralPath -ErrorAction Stop; "
         "$r=@($a.Access | ForEach-Object { "
         "$s=$_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value; "
@@ -735,14 +742,25 @@ def _validate_windows_secret_acl(path: Path) -> None:
         "[pscustomobject]@{protected=$a.AreAccessRulesProtected;rules=$r} | "
         "ConvertTo-Json -Compress -Depth 4 }"
     )
-    result = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-        capture_output=True,
-        text=True,
-        timeout=15,
-        check=False,
-        env=environment,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                script,
+                encoded_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ProfileRuntimeError(
+            "could not inspect the Windows ACL on the service token"
+        ) from exc
     if result.returncode != 0:
         raise ProfileRuntimeError("could not inspect the Windows ACL on the service token")
     try:

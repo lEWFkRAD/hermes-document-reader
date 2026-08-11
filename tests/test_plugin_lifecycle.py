@@ -1191,11 +1191,86 @@ def test_windows_acl_hardener_uses_icacls_then_exact_postcondition(
     assert validated == [path]
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows ACL validation contract")
+def test_windows_acl_validator_base64_roundtrips_literal_path_without_env_mutation(
+    monkeypatch, tmp_path
+):
+    path = (
+        tmp_path
+        / "Hermes Profiles \u03a9 \U0001f600 ;&$()[]%"
+        / "engine token \u00e9 with spaces.token"
+    ).resolve()
+    sid = "S-1-5-21-100-200-300-400"
+    calls = []
+    parent_environment = dict(os.environ)
+    payload = json.dumps(
+        {
+            "protected": True,
+            "rules": [
+                {"sid": sid, "type": "Allow", "inherited": False},
+                {"sid": "S-1-5-18", "type": "Allow", "inherited": False},
+            ],
+        }
+    )
+
+    def record_run(command, **kwargs):
+        calls.append((list(command), kwargs))
+        return subprocess.CompletedProcess(command, 0, payload, "")
+
+    monkeypatch.setattr(profile_runtime, "_current_windows_sid", lambda: sid)
+    monkeypatch.setattr(profile_runtime.subprocess, "run", record_run)
+
+    NATIVE_WINDOWS_ACL_VALIDATOR(path)
+
+    command, kwargs = calls[0]
+    assert command[:4] == [
+        "powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+    ]
+    assert base64.b64decode(command[-1]).decode("utf-8") == str(path)
+    assert "env" not in kwargs
+    assert dict(os.environ) == parent_environment
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows ACL validation contract")
+def test_windows_acl_validator_rejects_unsafe_path_transport_before_launch(
+    monkeypatch,
+):
+    sid = "S-1-5-21-100-200-300-400"
+
+    def unexpected_run(*args, **kwargs):
+        raise AssertionError("ACL validator must reject before launching PowerShell")
+
+    monkeypatch.setattr(profile_runtime, "_current_windows_sid", lambda: sid)
+    monkeypatch.setattr(profile_runtime.subprocess, "run", unexpected_run)
+
+    oversized = Path("C:/" + ("a" * 18_001))
+    with pytest.raises(profile_runtime.ProfileRuntimeError, match="too long"):
+        NATIVE_WINDOWS_ACL_VALIDATOR(oversized)
+
+    unencodable = Path("C:/invalid-" + chr(0xD800))
+    with pytest.raises(profile_runtime.ProfileRuntimeError, match="encoded safely"):
+        NATIVE_WINDOWS_ACL_VALIDATOR(unencodable)
+
+    def failed_launch(*args, **kwargs):
+        raise OSError("CreateProcess rejected the command")
+
+    monkeypatch.setattr(profile_runtime.subprocess, "run", failed_launch)
+    with pytest.raises(profile_runtime.ProfileRuntimeError, match="could not inspect"):
+        NATIVE_WINDOWS_ACL_VALIDATOR(Path("C:/safe/profile/token"))
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows ACL hardening contract")
 def test_native_icacls_handles_unicode_path_and_rejects_explicit_foreign_ace(
     monkeypatch, tmp_path
 ):
-    path = (tmp_path / "Hermes Profiles Ω" / "engine token é.token").resolve()
+    path = (
+        tmp_path
+        / "Hermes Profiles Ω 😀 ;&$()[]%"
+        / "engine token é.token"
+    ).resolve()
     path.parent.mkdir()
     path.write_text("profile-secret-value\n", encoding="utf-8")
     monkeypatch.setattr(
