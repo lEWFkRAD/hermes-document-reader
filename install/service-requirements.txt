@@ -2,6 +2,6 @@ beautifulsoup4==4.15.0
 chandra-ocr==0.2.0
 filetype==1.2.0
 httpx==0.28.1
-openai==2.24.0
+openai==3.3.1
 openpyxl==3.1.5
-pypdfium2==5.12.1
+pypdfium2==5.13.0
