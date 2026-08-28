@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from pathlib import Path
 
 import anydoc
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -32,7 +32,7 @@ sys.path.insert(0, str(ENGINE_DIR if ENGINE_DIR.is_dir() else PROJECT_ROOT))
 import grm_ocr
 
 
-mcp = FastMCP("document-reader")
+mcp = MCPServer("document-reader")
 
 _LOCAL_EXTENSIONS = {
     ".csv", ".doc", ".docx", ".epub", ".html", ".md", ".odp", ".ods",

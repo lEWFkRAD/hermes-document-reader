@@ -301,10 +301,10 @@ def _validate_service_lock(
     for package, version in direct_requirements.items():
         if packages.get(package) != version:
             raise SmokeError(f"{name} does not satisfy {package}=={version}")
-    if packages.get("pip") != "26.1.2":
-        raise SmokeError(f"{name} does not hash pip==26.1.2")
-    if packages.get("setuptools") != "83.0.0":
-        raise SmokeError(f"{name} does not hash setuptools==83.0.0")
+    if packages.get("pip") != "26.2.1":
+        raise SmokeError(f"{name} does not hash pip==26.2.1")
+    if packages.get("setuptools") != "84.0.0":
+        raise SmokeError(f"{name} does not hash setuptools==84.0.0")
 
 
 def _import_smoke(root: Path) -> None:
@@ -418,8 +418,8 @@ def smoke_archive(archive: Path, version: str, repository_root: Path) -> None:
             "install/service-requirements.txt",
         )
         for package, bootstrap_version in {
-            "pip": "26.1.2",
-            "setuptools": "83.0.0",
+            "pip": "26.2.1",
+            "setuptools": "84.0.0",
         }.items():
             if package in direct_requirements:
                 raise SmokeError(f"service lock input repeats {package}")

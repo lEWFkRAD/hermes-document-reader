@@ -965,8 +965,8 @@ def _lock_inventory(
             raise LifecycleError("hashed dependency lock contains invalid artifact hashes")
         inventory[name] = version
         allowed_hashes[name] = frozenset(hashes)
-    if not inventory or inventory.get("pip") != "26.1.2" or "setuptools" not in inventory:
-        raise LifecycleError("hashed dependency lock must pin pip 26.1.2 and setuptools")
+    if not inventory or inventory.get("pip") != "26.2.1" or "setuptools" not in inventory:
+        raise LifecycleError("hashed dependency lock must pin pip 26.2.1 and setuptools")
     payload = json.dumps(
         [{"name": name, "version": inventory[name]} for name in sorted(inventory)],
         ensure_ascii=True,
@@ -1408,8 +1408,8 @@ def _installed_environment_attestation(python: Path) -> dict[str, str]:
     for key in ("dependency_set_sha256", "installed_content_sha256"):
         if not re.fullmatch(r"[0-9a-f]{64}", str(value.get(key, ""))):
             raise LifecycleError("installed service environment attestation hash is invalid")
-    if value.get("pip_version") != "26.1.2":
-        raise LifecycleError("service runtime did not activate supported pip 26.1.2")
+    if value.get("pip_version") != "26.2.1":
+        raise LifecycleError("service runtime did not activate supported pip 26.2.1")
     return {key: str(value[key]) for key in value}
 
 
@@ -1468,7 +1468,7 @@ def _validate_runtime_attestation(raw: Mapping[str, Any]) -> dict[str, Any]:
     value["contract"] = _validate_runtime_contract(value.get("contract", {}))
     if value.get("lock_file") != _lock_for_contract(value["contract"]):
         raise LifecycleError("runtime attestation lock does not match its interpreter")
-    if value.get("pip_version") != "26.1.2":
+    if value.get("pip_version") != "26.2.1":
         raise LifecycleError("runtime attestation pip version is unsupported")
     for key in (
         "lock_sha256",
@@ -1547,8 +1547,8 @@ def _provision_release(
         check=False,
         env=_isolated_subprocess_env(),
     )
-    if pip_probe.returncode != 0 or not pip_probe.stdout.startswith("pip 26.1.2 "):
-        raise LifecycleError("service runtime did not activate supported pip 26.1.2")
+    if pip_probe.returncode != 0 or not pip_probe.stdout.startswith("pip 26.2.1 "):
+        raise LifecycleError("service runtime did not activate supported pip 26.2.1")
     pip_check = subprocess.run(
         _private_runtime_command(
             temporary_python,

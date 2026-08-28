@@ -19,8 +19,8 @@ export const SERVICE_LOCK_TARGETS = Object.freeze([
 ]);
 
 export const SERVICE_BOOTSTRAP_REQUIREMENTS = Object.freeze([
-  Object.freeze(["pip", "26.1.2"]),
-  Object.freeze(["setuptools", "83.0.0"]),
+  Object.freeze(["pip", "26.2.1"]),
+  Object.freeze(["setuptools", "84.0.0"]),
 ]);
 
 const LOCK_TITLE = "# Hermes Document Reader service dependency lock";
@@ -119,11 +119,11 @@ export function validateServiceLockText(raw, contract, requiredRequirements) {
       `${label} does not satisfy required service pin ${name}==${version}`,
     );
   }
-  assert.equal(packages.get("pip")?.version, "26.1.2", `${label} must hash pip==26.1.2`);
+  assert.equal(packages.get("pip")?.version, "26.2.1", `${label} must hash pip==26.2.1`);
   assert.equal(
     packages.get("setuptools")?.version,
-    "83.0.0",
-    `${label} must hash setuptools==83.0.0`,
+    "84.0.0",
+    `${label} must hash setuptools==84.0.0`,
   );
   return packages;
 }

@@ -57,7 +57,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Service lock report/inventory verification failed" }
           & $servicePython -I -m pip check
           & $servicePython -I -c "import bs4, chandra, filetype, httpx, openai, openpyxl, pypdfium2"
-          python -m pip install --disable-pip-version-check --upgrade pip==26.1.2
+          python -m pip install --disable-pip-version-check --upgrade pip==26.2.1
           python -m pip install --disable-pip-version-check pip-audit==2.10.1
           python -m pip_audit --requirement $lock --no-deps
       - name: Exercise real lifecycle provision, reuse, and tamper gates
@@ -101,7 +101,7 @@ jobs:
           node scripts/verify-release-tag.mjs --tag "${{ github.ref_name }}" --event-sha "${{ github.sha }}"
           if ($LASTEXITCODE -ne 0) { throw "Release tag identity validation failed" }
       - run: npm ci --ignore-scripts
-      - run: python -m pip install --disable-pip-version-check --upgrade pip==26.1.2
+      - run: python -m pip install --disable-pip-version-check --upgrade pip==26.2.1
       - run: python -m pip install --disable-pip-version-check --requirement requirements.txt --requirement requirements-dev.txt
       - run: npm run validate
       - run: python -m pytest tests -q --basetemp "${{ runner.temp }}/document-reader-tests"
