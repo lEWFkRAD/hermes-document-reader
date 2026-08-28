@@ -64,7 +64,7 @@ def _runtime_attestation(*, artifact: str = "d" * 64) -> dict:
         "contract": contract,
         "lock_file": "install/locks/windows-cpython-311-x86_64.txt",
         "lock_sha256": "c" * 64,
-        "pip_version": "26.1.2",
+        "pip_version": "26.2.1",
         "dependency_set_sha256": "b" * 64,
         "artifact_set_sha256": artifact,
         "installed_content_sha256": "e" * 64,
@@ -78,7 +78,7 @@ def _stage_attestation(contract, lock_file, lock_sha, *, artifact="d" * 64):
         "contract": dict(contract),
         "lock_file": lock_file,
         "lock_sha256": lock_sha,
-        "pip_version": "26.1.2",
+        "pip_version": "26.2.1",
         "dependency_set_sha256": "b" * 64,
         "artifact_set_sha256": artifact,
         "installed_content_sha256": "e" * 64,
@@ -93,7 +93,7 @@ def _mock_environment(monkeypatch, contract):
         lifecycle,
         "_installed_environment_attestation",
         lambda python: {
-            "pip_version": "26.1.2",
+            "pip_version": "26.2.1",
             "dependency_set_sha256": "b" * 64,
             "installed_content_sha256": "e" * 64,
         },
@@ -283,7 +283,7 @@ def test_interpreter_cache_tag_is_part_of_release_identity(monkeypatch, tmp_path
         lifecycle,
         "_installed_environment_attestation",
         lambda python: {
-            "pip_version": "26.1.2",
+            "pip_version": "26.2.1",
             "dependency_set_sha256": "b" * 64,
             "installed_content_sha256": "e" * 64,
         },
@@ -333,7 +333,7 @@ def test_existing_release_refuses_installed_content_drift(monkeypatch, tmp_path)
         lifecycle,
         "_installed_environment_attestation",
         lambda python: {
-            "pip_version": "26.1.2",
+            "pip_version": "26.2.1",
             "dependency_set_sha256": "b" * 64,
             "installed_content_sha256": next(environment_hashes),
         },
@@ -450,8 +450,8 @@ def test_shipped_runtime_locks_have_exact_identical_seeded_inventory():
     assert set(artifact_hashes[1]) == set(inventories[1])
     assert all(artifact_hashes[0].values())
     assert all(artifact_hashes[1].values())
-    assert inventories[0]["pip"] == "26.1.2"
-    assert inventories[0]["setuptools"] == "83.0.0"
+    assert inventories[0]["pip"] == "26.2.1"
+    assert inventories[0]["setuptools"] == "84.0.0"
 
 
 def test_pip_report_artifact_hash_must_be_selected_by_lock(tmp_path):

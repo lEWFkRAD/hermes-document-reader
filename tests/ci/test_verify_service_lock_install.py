@@ -22,8 +22,8 @@ def test_service_lock_parser_is_lane_bound_and_crlf_tolerant(tmp_path, minor, co
     target, source = contract
     packages = parse_lock(source, target)
     assert len(packages) == 32
-    assert packages["pip"].version == "26.1.2"
-    assert packages["setuptools"].version == "83.0.0"
+    assert packages["pip"].version == "26.2.1"
+    assert packages["setuptools"].version == "84.0.0"
 
     crlf = tmp_path / source.name
     crlf.write_bytes(source.read_bytes().replace(b"\n", b"\r\n"))
@@ -49,7 +49,7 @@ def _report(packages):
         )
     return {
         "version": "1",
-        "pip_version": "26.1.2",
+        "pip_version": "26.2.1",
         "environment": {
             "implementation_name": "cpython",
             "python_version": "3.11",

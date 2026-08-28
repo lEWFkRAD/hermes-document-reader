@@ -33,7 +33,7 @@ def _runtime_attestation(lifecycle_module):
         },
         "lock_file": "install/locks/windows-cpython-311-x86_64.txt",
         "lock_sha256": "c" * 64,
-        "pip_version": "26.1.2",
+        "pip_version": "26.2.1",
         "dependency_set_sha256": "b" * 64,
         "artifact_set_sha256": "d" * 64,
         "installed_content_sha256": "e" * 64,

@@ -211,11 +211,11 @@ test("runtime and development requirements are exact reviewed pins", async () =>
     );
   }
   assert.ok(
-    runtime.some((entry) => entry.toLowerCase() === "firecrawl-anydoc==0.1.2"),
+    runtime.some((entry) => entry.toLowerCase() === "firecrawl-anydoc==0.2.3"),
     "requirements.txt must install the anydoc module imported by the MCP server",
   );
   assert.ok(
-    runtime.includes("fastapi==0.133.1"),
+    runtime.includes("fastapi==0.141.1"),
     "requirements.txt must pin the dashboard API framework",
   );
   assert.ok(
@@ -228,10 +228,10 @@ test("runtime and development requirements are exact reviewed pins", async () =>
       `requirements-dev.txt must pin ${required}`,
     );
   }
-  assert.ok(development.includes("pip==26.1.2"), "CI bootstrap pip pin must be explicit");
+  assert.ok(development.includes("pip==26.2.1"), "CI bootstrap pip pin must be explicit");
   assert.ok(development.includes("PyYAML==6.0.3"), "archive YAML parsing must be pinned");
   assert.ok(
-    development.includes("setuptools==83.0.0"),
+    development.includes("setuptools==84.0.0"),
     "the fully resolved environment must include the reviewed setuptools security fix",
   );
 });
@@ -244,8 +244,8 @@ test("Windows service locks are complete, hashed, lane-bound, and archive-allowl
   assert.deepEqual([...result.locks.keys()], SERVICE_LOCK_TARGETS.map(({ target }) => target));
   for (const packages of result.locks.values()) {
     assert.equal(packages.size, 32);
-    assert.equal(packages.get("pip").version, "26.1.2");
-    assert.equal(packages.get("setuptools").version, "83.0.0");
+    assert.equal(packages.get("pip").version, "26.2.1");
+    assert.equal(packages.get("setuptools").version, "84.0.0");
     for (const requirement of packages.values()) assert.ok(requirement.hashes.length > 0);
   }
 });
@@ -273,7 +273,7 @@ test("service lock parser tolerates CRLF but rejects target, pin, and hash drift
     relativePath: "fixture-lock.txt",
   };
   const direct = parseExactRequirements(
-    "alpha==1.0\r\npip==26.1.2\r\nsetuptools==83.0.0\r\n",
+    "alpha==1.0\r\npip==26.2.1\r\nsetuptools==84.0.0\r\n",
     "fixture requirements",
   );
   const hashA = "a".repeat(64);
@@ -288,9 +288,9 @@ test("service lock parser tolerates CRLF but rejects target, pin, and hash drift
     `    --hash=sha256:${hashA}`,
     "bravo==2.0 \\",
     `    --hash=sha256:${"d".repeat(64)}`,
-    "pip==26.1.2 \\",
+    "pip==26.2.1 \\",
     `    --hash=sha256:${hashB}`,
-    "setuptools==83.0.0 \\",
+    "setuptools==84.0.0 \\",
     `    --hash=sha256:${"c".repeat(64)}`,
     "",
   ].join("\r\n");

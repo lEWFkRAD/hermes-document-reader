@@ -25,6 +25,12 @@ based on Keep a Changelog, and this project uses Semantic Versioning.
   release archive verification, SHA-256 checksum assets, and build-provenance
   attestations.
 
+### Changed
+
+- Migrated the source-only MCP document tools to the native MCP 2 server API
+  and refreshed the coordinated runtime, service, and bootstrap dependency
+  pins and hashed Windows locks.
+
 ### Security
 
 - Loopback-only service configuration with token authentication, owner and
