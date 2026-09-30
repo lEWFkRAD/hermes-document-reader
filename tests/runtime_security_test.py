@@ -756,6 +756,9 @@ with m.RuntimeOwnerLock(runtime / 'service.lock'):
         for directory in (owned, unsafe, arbitrary):
             directory.mkdir(parents=True)
         (owned / "out.txt").write_text("owned", encoding="utf-8")
+        # Avoid a same-tick filesystem timestamp making RETENTION_DAYS=0 flaky.
+        expired = time.time() - 60
+        os.utime(owned, (expired, expired))
         unsafe_child = unsafe / "link"
         unsafe_child.write_text("pretend-reparse", encoding="utf-8")
         (arbitrary / "keep.txt").write_text("keep", encoding="utf-8")
@@ -773,6 +776,42 @@ with m.RuntimeOwnerLock(runtime / 'service.lock'):
         self.assertFalse(owned.exists())
         self.assertTrue(unsafe.exists())
         self.assertTrue(arbitrary.exists())
+
+    def test_retention_byte_pressure_preserves_the_newest_job(self):
+        paths = []
+        for index in range(3):
+            path = service.JOBS_DIR / f"20260930-01010{index}-aaaaaaaa"
+            path.mkdir(parents=True)
+            (path / "out.txt").write_bytes(b"123456")
+            modified = time.time() - (300 - index * 100)
+            os.utime(path, (modified, modified))
+            paths.append(path)
+        with (
+            mock.patch.object(service, "RETENTION_DAYS", 30),
+            mock.patch.object(service, "MAX_RETAINED_JOBS", 100),
+            mock.patch.object(service, "MAX_RETAINED_JOB_BYTES", 8),
+        ):
+            removed = service.enforce_retention()
+        self.assertEqual(removed, {paths[0].name, paths[1].name})
+        self.assertTrue(paths[2].is_dir())
+
+    def test_retention_combined_count_and_byte_caps_keep_newest_results(self):
+        paths = []
+        for index in range(3):
+            path = service.JOBS_DIR / f"20260930-02020{index}-bbbbbbbb"
+            path.mkdir(parents=True)
+            (path / "out.txt").write_bytes(b"123456")
+            modified = time.time() - (300 - index * 100)
+            os.utime(path, (modified, modified))
+            paths.append(path)
+        with (
+            mock.patch.object(service, "RETENTION_DAYS", 30),
+            mock.patch.object(service, "MAX_RETAINED_JOBS", 2),
+            mock.patch.object(service, "MAX_RETAINED_JOB_BYTES", 12),
+        ):
+            removed = service.enforce_retention()
+        self.assertEqual(removed, {paths[0].name})
+        self.assertTrue(all(path.is_dir() for path in paths[1:]))
 
     def test_formula_cells_are_written_as_inert_strings(self):
         output = self.root / "formula.xlsx"

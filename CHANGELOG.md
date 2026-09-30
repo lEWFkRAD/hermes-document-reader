@@ -5,6 +5,12 @@ based on Keep a Changelog, and this project uses Semantic Versioning.
 
 ## [0.1.0] - Unreleased
 
+### Fixed
+
+- Reclaim oldest completed jobs first under byte pressure while retaining the
+  newest-first count policy and all directory ownership/identity checks.
+- Make the Windows retention safety test independent of filesystem clock ticks.
+
 ### Added
 
 - Windows Hermes plugin lifecycle commands for profile configuration,

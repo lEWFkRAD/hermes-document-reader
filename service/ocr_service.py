@@ -1297,7 +1297,9 @@ def enforce_retention(active_job_id: str | None = None) -> set[str]:
     jobs.sort(reverse=True)
     retained_bytes = sum(size for _, _, size, _ in jobs)
     removed = set()
-    for index, (modified, path, size, approved) in enumerate(jobs):
+    # Keep the newest-first rank for the count cap, but reclaim oldest first.
+    # Byte pressure must not evict a recent result while older jobs remain.
+    for index, (modified, path, size, approved) in reversed(list(enumerate(jobs))):
         too_old = modified < cutoff
         over_count = index >= MAX_RETAINED_JOBS
         over_bytes = retained_bytes > MAX_RETAINED_JOB_BYTES
