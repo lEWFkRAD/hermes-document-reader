@@ -184,3 +184,21 @@ the repository; each project and model keeps its own license terms.
 ## License
 
 Hermes Document Reader is MIT licensed. See [LICENSE](LICENSE).
+
+## Recovery and extraction evidence
+
+Completed OCR pages have atomic, digest-checked checkpoints inside the existing
+retention-managed job cache. Retries reuse matching source bytes, profile, engine
+settings, prompt and service revision, while regenerating previews. Changed or
+corrupt checkpoints are ignored. Cache eviction means a later retry may OCR again.
+Cancellation is checked again after an OCR response returns before saving it.
+
+Processing reserves 512 MiB free space plus bounded anticipated output; low space
+pauses work with the original document preserved. Retained processed files are
+never automatically deleted to make room. Other applications can still consume
+disk space after a check.
+
+Excel exports append Sources and Review sheets after the existing tables. They
+record source page numbers, OCR-output hashes, uneven rows and numeric-looking
+text requiring inspection. Leading-zero identifiers, long integers and ambiguous
+locale formats stay text. These flags are heuristics, not OCR confidence scores.
