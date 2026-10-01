@@ -642,6 +642,55 @@ with m.RuntimeOwnerLock(runtime / 'service.lock'):
                 service.load_page(source, 0)
             loader.assert_not_called()
 
+    def test_restart_reuses_completed_page_without_repeating_remote_ocr(self):
+        from types import SimpleNamespace
+        inbox = self.root / "data" / "inbox"
+        inbox.mkdir(exist_ok=True)
+        source = inbox / "resume.png"
+        Image.new("RGB", (4, 4), "white").save(source)
+        config = SimpleNamespace(api_base="https://ocr.invalid/v1", model="synthetic", max_tokens=1000)
+        with (
+            mock.patch.object(service.grm_ocr, "current_config", return_value=config),
+            mock.patch.object(service.grm_ocr, "probe", return_value=True),
+            mock.patch.object(service, "load_page", side_effect=lambda *args: Image.new("RGB", (4, 4), "white")),
+            mock.patch.object(service.grm_ocr, "ocr_page_raw", return_value="<p>Amount 42</p>") as ocr,
+            mock.patch.object(service.grm_ocr, "raw_to_markdown", return_value="Amount 42"),
+            mock.patch.object(service.grm_ocr, "raw_to_html", return_value="<p>Amount 42</p>"),
+            mock.patch.object(service.time, "sleep", return_value=None),
+        ):
+            with mock.patch.object(service, "verify_source_matches_snapshot", side_effect=SystemExit("synthetic interruption")):
+                with self.assertRaises(SystemExit):
+                    service.process_file(source, inbox)
+            self.assertTrue(source.exists())
+            self.assertEqual(ocr.call_count, 1)
+            self.assertEqual(len(list(service.JOBS_DIR.glob("*/page_1.checkpoint.json"))), 1)
+            service.process_file(source, inbox)
+            self.assertEqual(ocr.call_count, 1)
+            self.assertFalse(source.exists())
+            self.assertEqual(service.STATE["history"][0]["status"], "finished")
+            newest = service.JOBS_DIR / service.STATE["history"][0]["id"]
+            self.assertTrue((newest / "page_1.jpg").is_file())
+
+    def test_late_ocr_response_after_cancel_is_not_checkpointed(self):
+        from types import SimpleNamespace
+        inbox = self.root / "data" / "inbox"
+        inbox.mkdir(exist_ok=True)
+        source = inbox / "cancel.png"
+        Image.new("RGB", (4, 4), "white").save(source)
+        def cancelled_response(*args, **kwargs):
+            service.STATE["job"]["cancel"] = True
+            return "<p>Late response</p>"
+        with (
+            mock.patch.object(service.grm_ocr, "current_config", return_value=SimpleNamespace(api_base="https://ocr.invalid/v1", model="synthetic", max_tokens=1000)),
+            mock.patch.object(service.grm_ocr, "probe", return_value=True),
+            mock.patch.object(service, "load_page", side_effect=lambda *args: Image.new("RGB", (4, 4), "white")),
+            mock.patch.object(service.grm_ocr, "ocr_page_raw", side_effect=cancelled_response),
+            mock.patch.object(service.time, "sleep", return_value=None),
+        ):
+            service.process_file(source, inbox)
+        self.assertEqual(list(service.JOBS_DIR.glob("*/page_1.checkpoint.json")), [])
+        self.assertEqual(service.STATE["history"][0]["status"], "cancelled")
+
     def test_ocr_uses_private_snapshot_and_refuses_a_changed_live_source(self):
         inbox = self.root / "data" / "inbox"
         inbox.mkdir(exist_ok=True)

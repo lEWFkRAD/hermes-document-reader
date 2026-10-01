@@ -393,7 +393,7 @@ async function refresh() {
   const labels = {
     loading:'opening file', rendering:'preparing pages', ocr:'recognizing text',
     finished:'complete', finished_with_errors:'complete — review needed',
-    failed:'failed', cancelled:'stopped', quarantined:'quarantined',
+    failed:'failed', cancelled:'stopped', quarantined:'quarantined', waiting_for_space:'paused — free disk space',
   };
   badge.textContent = labels[job.state] || job.state;
   badge.className = job.state === 'finished' || job.state === 'cancelled'
