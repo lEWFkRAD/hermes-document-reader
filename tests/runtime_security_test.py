@@ -759,6 +759,10 @@ with m.RuntimeOwnerLock(runtime / 'service.lock'):
         unsafe_child = unsafe / "link"
         unsafe_child.write_text("pretend-reparse", encoding="utf-8")
         (arbitrary / "keep.txt").write_text("keep", encoding="utf-8")
+        # Make age deterministic even on coarse Windows filesystem clocks.
+        old_timestamp = time.time() - 86400
+        for directory in (owned, unsafe, arbitrary):
+            os.utime(directory, (old_timestamp, old_timestamp))
         original_check = service._is_reparse_or_symlink
 
         def mark_unsafe(path):

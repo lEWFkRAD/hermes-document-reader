@@ -211,7 +211,7 @@ test("runtime and development requirements are exact reviewed pins", async () =>
     );
   }
   assert.ok(
-    runtime.some((entry) => entry.toLowerCase() === "firecrawl-anydoc==0.2.3"),
+    runtime.some((entry) => entry.toLowerCase() === "firecrawl-anydoc==0.2.4"),
     "requirements.txt must install the anydoc module imported by the MCP server",
   );
   assert.ok(
