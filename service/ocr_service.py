@@ -780,7 +780,11 @@ def export_xlsx(page_htmls: list, out_path: Path) -> None:
     text_ws.title = "Text"
     text_ws.column_dimensions["A"].width = 110
     row = 1
-    seen = set()
+    sources = wb.create_sheet("Sources")
+    sources.append(["Table", "Source page", "Source HTML SHA256", "Note"])
+    review = wb.create_sheet("Review")
+    review.append(["Source page", "Table", "Cell", "Original text", "Check"])
+    seen = {}
     for page_num, html in enumerate(page_htmls, 1):
         soup = BeautifulSoup(html or "", "html.parser")
         page_tables = 0
@@ -794,19 +798,25 @@ def export_xlsx(page_htmls: list, out_path: Path) -> None:
             key = repr(rows)
             if key in seen:
                 dupes += 1
+                sources.append([seen[key], page_num, hashlib.sha256(html.encode("utf-8")).hexdigest(), "Duplicate table retained at listed sheet"])
                 continue
-            seen.add(key)
             page_tables += 1
             ws = wb.create_sheet(f"P{page_num} Table {page_tables}"[:31])
+            seen[key] = ws.title
+            sources.append([ws.title, page_num, hashlib.sha256(html.encode("utf-8")).hexdigest(), "OCR output; verify against original page"])
+            if len({len(cols) for cols in rows}) > 1:
+                review.append([page_num, ws.title, "", "", "Uneven table rows; inspect merged or missing cells"])
             widths = {}
             for r, cols in enumerate(rows, 1):
                 for c, val in enumerate(cols, 1):
-                    num = val.replace(",", "").replace("$", "").strip()
-                    if re.fullmatch(r"-?\d+(\.\d+)?", num or "x"):
-                        ws.cell(row=r, column=c, value=float(num))
+                    num = conservative_number(val)
+                    if num is not None:
+                        ws.cell(row=r, column=c, value=num)
                     else:
                         cell = ws.cell(row=r, column=c, value=safe_spreadsheet_text(val))
                         cell.data_type = "s"
+                        if re.search(r"\d", val):
+                            review.append([page_num, ws.title, cell.coordinate, safe_spreadsheet_text(val), "Preserved as text: verify identifier, amount, date or locale"])
                     widths[c] = min(60, max(widths.get(c, 10), len(val) + 2))
             for c, w in widths.items():
                 ws.column_dimensions[ws.cell(row=1, column=c).column_letter].width = w
@@ -821,6 +831,8 @@ def export_xlsx(page_htmls: list, out_path: Path) -> None:
                 set_inert_text_cell(text_ws, row, 1, line.strip())
                 row += 1
         row += 1
+    wb.move_sheet(sources, offset=len(wb.worksheets) - wb.index(sources) - 1)
+    wb.move_sheet(review, offset=len(wb.worksheets) - wb.index(review) - 1)
     wb.save(out_path)
 
 
@@ -1297,7 +1309,9 @@ def enforce_retention(active_job_id: str | None = None) -> set[str]:
     jobs.sort(reverse=True)
     retained_bytes = sum(size for _, _, size, _ in jobs)
     removed = set()
-    for index, (modified, path, size, approved) in enumerate(jobs):
+    # Keep the newest-first rank for the count cap, but reclaim oldest first.
+    # Byte pressure must not evict a recent result while older jobs remain.
+    for index, (modified, path, size, approved) in reversed(list(enumerate(jobs))):
         too_old = modified < cutoff
         over_count = index >= MAX_RETAINED_JOBS
         over_bytes = retained_bytes > MAX_RETAINED_JOB_BYTES
@@ -1485,6 +1499,101 @@ def handle_failed_source(
     return "quarantined"
 
 
+class StoragePressureError(RuntimeError):
+    pass
+
+
+def require_storage_space(directory: Path, additional_bytes: int = 0) -> None:
+    # Retained processed documents are not a disposable cache. Pause intake/work
+    # instead of deleting records or quarantining an otherwise valid source.
+    if shutil.disk_usage(directory).free < 512 * 1024 * 1024 + max(0, additional_bytes):
+        raise StoragePressureError("Not enough free disk space; source preserved. Free space before retrying.")
+
+
+def checkpoint_identity(source_digest: str) -> str | None:
+    try:
+        config = grm_ocr.current_config()
+    except ValueError:
+        return None  # Unconfigured/test engines cannot produce reusable pages.
+    identity = [PROFILE_ID, source_digest, VERSION, config.api_base, config.model,
+                config.max_tokens, grm_ocr.PROMPT_MAPPING["ocr_layout"],
+                hashlib.sha256(Path(__file__).read_bytes()).hexdigest()]
+    return hashlib.sha256(json.dumps(identity).encode("utf-8")).hexdigest()
+
+
+def read_checkpoint(path: Path, identity: str, page: int) -> dict | None:
+    try:
+        fd, before = _open_regular_readonly(path)
+        try:
+            maximum = MAX_PAGE_OUTPUT_CHARS * 12 + 4096
+            if before.st_size > maximum:
+                return None
+            with os.fdopen(fd, "rb", closefd=False) as handle:
+                raw = handle.read(maximum + 1)
+            after = os.fstat(fd)
+            if _stat_signature(before) != _stat_signature(after) or not os.path.samestat(after, path.lstat()):
+                return None
+        finally:
+            os.close(fd)
+        value = json.loads(raw)
+        if value.get("identity") != identity or value.get("page") != page:
+            return None
+        md, html = value.get("md"), value.get("html")
+        if not isinstance(md, str) or not isinstance(html, str) or max(len(md), len(html)) > MAX_PAGE_OUTPUT_CHARS:
+            return None
+        digest = hashlib.sha256(json.dumps([md, html]).encode("utf-8")).hexdigest()
+        if value.get("sha256") != digest:
+            return None
+        return {"md": md, "html": sanitize_ocr_html(html)}
+    except (OSError, ValueError, RuntimeError, TypeError, AttributeError):
+        return None
+
+
+def saved_pages(identity: str | None, count: int, current_job: Path) -> dict:
+    if not identity:
+        return {}
+    recovered = {}
+    recovered_chars = 0
+    # Bounded lookup within the existing profile-owned, retention-managed cache.
+    import itertools
+    for directory in itertools.islice(JOBS_DIR.iterdir(), MAX_RETAINED_JOBS * 2):
+        if directory == current_job or _is_reparse_or_symlink(directory) or not directory.is_dir():
+            continue
+        for page in range(count):
+            if page not in recovered:
+                value = read_checkpoint(directory / f"page_{page + 1}.checkpoint.json", identity, page)
+                if value is not None:
+                    chars = len(value["md"]) + len(value["html"])
+                    if recovered_chars + chars > MAX_JOB_OUTPUT_CHARS:
+                        return recovered
+                    recovered_chars += chars
+                    recovered[page] = value
+        if len(recovered) == count:
+            break
+    return recovered
+
+
+def save_page_checkpoint(directory: Path, identity: str | None, page: int, md: str, html: str) -> None:
+    if identity:
+        value = {"identity": identity, "page": page, "md": md, "html": html,
+                 "sha256": hashlib.sha256(json.dumps([md, html]).encode("utf-8")).hexdigest()}
+        atomic_write_bytes(directory / f"page_{page + 1}.checkpoint.json", json.dumps(value).encode("utf-8"))
+
+
+def conservative_number(value: str):
+    # Excel stores only 15 significant decimal digits. Preserve identifiers,
+    # locale-ambiguous grouping and long numbers as inert text.
+    text = value.strip()
+    numeric = text.removeprefix("$").strip()
+    if not re.fullmatch(r"-?(?:0|[1-9]\d*|[1-9]\d{0,2}(?:,\d{3})+)(?:\.\d+)?", numeric):
+        return None
+    plain = numeric.replace(",", "")
+    if len(re.sub(r"[^0-9]", "", plain).lstrip("0")) > 15:
+        return None
+    number = float(plain)
+    return number if math.isfinite(number) else None
+
+
 def process_file(src: Path, inbox: Path) -> None:
     revalidate_runtime_directory(inbox)
     processed = revalidate_runtime_directory(PROCESSED_DIR)
@@ -1534,6 +1643,7 @@ def process_file(src: Path, inbox: Path) -> None:
         except ValueError as exc:
             disposition = handle_failed_source(src, inbox, exc, permanent=True)
             raise RuntimeError(f"input rejected and {disposition}") from exc
+        require_storage_space(processed, src.stat().st_size * 2 + MAX_JOB_OUTPUT_CHARS * 8)
         try:
             (
                 snapshot_path,
@@ -1545,10 +1655,13 @@ def process_file(src: Path, inbox: Path) -> None:
         except ValueError as exc:
             disposition = handle_failed_source(src, inbox, exc, permanent=True)
             raise RuntimeError(f"input rejected and {disposition}") from exc
+        identity = checkpoint_identity(snapshot_digest)
+        recovered = saved_pages(identity, n_pages, job_dir)
         # preflight: a dead OCR server should fail the job in seconds with a
         # clear message, not grind a per-page timeout for every page
         try:
-            grm_ocr.probe(timeout=8)
+            if len(recovered) < n_pages:
+                grm_ocr.probe(timeout=8)
         except Exception as exc:
             raise RuntimeError(
                 "OCR server is unavailable or its TLS/configuration check failed. "
@@ -1589,6 +1702,7 @@ def process_file(src: Path, inbox: Path) -> None:
                     job["done"] += 1
                 return
             try:
+                require_storage_space(job_dir, MAX_PAGE_OUTPUT_CHARS * 12)
                 img = load_page(snapshot_path, i, snapshot_bytes)
             except Exception as e:
                 page["state"] = "error"
@@ -1621,6 +1735,26 @@ def process_file(src: Path, inbox: Path) -> None:
                     close = getattr(display_image, "close", None)
                     if callable(close):
                         close()
+            cached = recovered.get(i)
+            if cached:
+                try:
+                    chars = len(cached["md"]) + len(cached["html"])
+                    with output_budget_lock:
+                        if output_chars[0] + chars > MAX_JOB_OUTPUT_CHARS:
+                            raise ValueError("Recovered pages exceed output budget")
+                        output_chars[0] += chars
+                    page_mds[i], page_htmls[i] = cached["md"], cached["html"]
+                    atomic_write_bytes(job_dir / f"page_{i + 1}.md", cached["md"].encode("utf-8"))
+                    atomic_write_bytes(job_dir / f"page_{i + 1}.html", cached["html"].encode("utf-8"))
+                    save_page_checkpoint(job_dir, identity, i, cached["md"], cached["html"])
+                    page.update(state="done", secs=0, chars=len(cached["md"]), resumed=True)
+                    with LOCK:
+                        job["done"] += 1
+                finally:
+                    close = getattr(img, "close", None)
+                    if callable(close):
+                        close()
+                return
             page["state"] = "working"
             with LOCK:
                 refresh_current()
@@ -1667,6 +1801,8 @@ def process_file(src: Path, inbox: Path) -> None:
                 )
                 if len(raw) > MAX_PAGE_OUTPUT_CHARS:
                     raise ValueError("OCR page output exceeded its safety limit")
+                if job.get("cancel"):
+                    raise _Cancelled()
                 md = grm_ocr.raw_to_markdown(raw)
                 html = sanitize_ocr_html(grm_ocr.raw_to_html(raw))
                 page_chars = len(md) + len(html)
@@ -1679,6 +1815,7 @@ def process_file(src: Path, inbox: Path) -> None:
                     output_chars[0] += page_chars
                 (job_dir / f"page_{i + 1}.md").write_text(md, encoding="utf-8")
                 (job_dir / f"page_{i + 1}.html").write_text(html, encoding="utf-8")
+                save_page_checkpoint(job_dir, identity, i, md, html)
                 page_mds[i] = md
                 page_htmls[i] = html
                 page["state"] = "done"
@@ -1716,6 +1853,7 @@ def process_file(src: Path, inbox: Path) -> None:
         errors = sum(1 for p in job["pages"] if p["state"] not in ("done", "skipped"))
         # Build job artifacts first. Processed receives atomic copies only after
         # every export has closed successfully.
+        require_storage_space(processed, MAX_JOB_OUTPUT_CHARS * 8)
         stem = Path(sanitize_name(src.name)).stem
         job_txt = job_dir / f"{stem}.txt"
         atomic_write_bytes(job_txt, export_txt(page_htmls).encode("utf-8"))
@@ -1811,6 +1949,11 @@ def process_file(src: Path, inbox: Path) -> None:
             save_history()
         enforce_retention(active_job_id=job_id)
         log(f"done: {src.name} ({job['total']} pages, {errors} errors)")
+    except StoragePressureError as e:
+        _retry_after[str(src)] = time.time() + 60
+        job["state"] = "waiting_for_space"
+        job["error"] = str(e)
+        log("Document processing paused for free disk space; source preserved")
     except Exception as e:
         disposition = "missing" if not src.exists() else "failed"
         if src.exists():
