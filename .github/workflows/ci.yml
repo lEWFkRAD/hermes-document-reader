@@ -206,7 +206,7 @@ jobs:
           node --check (Join-Path $smoke "dashboard/dist/index.js")
           node --check (Join-Path $smoke "desktop-plugin/document-reader/plugin.js")
           python scripts/smoke_plugin_archive.py $archive --version $version
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: hermes-document-reader-v${{ steps.metadata.outputs.version }}
           path: |
