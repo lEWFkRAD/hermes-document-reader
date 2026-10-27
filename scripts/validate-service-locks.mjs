@@ -19,7 +19,7 @@ export const SERVICE_LOCK_TARGETS = Object.freeze([
 ]);
 
 export const SERVICE_BOOTSTRAP_REQUIREMENTS = Object.freeze([
-  Object.freeze(["pip", "26.2.1"]),
+  Object.freeze(["pip", "26.2.2"]),
   Object.freeze(["setuptools", "84.0.0"]),
 ]);
 
@@ -119,7 +119,7 @@ export function validateServiceLockText(raw, contract, requiredRequirements) {
       `${label} does not satisfy required service pin ${name}==${version}`,
     );
   }
-  assert.equal(packages.get("pip")?.version, "26.2.1", `${label} must hash pip==26.2.1`);
+  assert.equal(packages.get("pip")?.version, "26.2.2", `${label} must hash pip==26.2.2`);
   assert.equal(
     packages.get("setuptools")?.version,
     "84.0.0",
