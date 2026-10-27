@@ -3,4 +3,4 @@ pip==26.2.2
 pip-audit==2.10.1
 pytest==9.1.1
 PyYAML==6.0.3
-setuptools==84.2.1
+setuptools==84.1.0
