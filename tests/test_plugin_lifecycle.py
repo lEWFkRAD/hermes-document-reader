@@ -451,7 +451,7 @@ def test_shipped_runtime_locks_have_exact_identical_seeded_inventory():
     assert all(artifact_hashes[0].values())
     assert all(artifact_hashes[1].values())
     assert inventories[0]["pip"] == "26.2.2"
-    assert inventories[0]["setuptools"] == "84.0.0"
+    assert inventories[0]["setuptools"] == "84.1.0"
 
 
 def test_pip_report_artifact_hash_must_be_selected_by_lock(tmp_path):

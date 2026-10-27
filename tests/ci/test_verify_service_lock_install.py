@@ -23,7 +23,7 @@ def test_service_lock_parser_is_lane_bound_and_crlf_tolerant(tmp_path, minor, co
     packages = parse_lock(source, target)
     assert len(packages) == 32
     assert packages["pip"].version == "26.2.2"
-    assert packages["setuptools"].version == "84.0.0"
+    assert packages["setuptools"].version == "84.1.0"
 
     crlf = tmp_path / source.name
     crlf.write_bytes(source.read_bytes().replace(b"\n", b"\r\n"))
