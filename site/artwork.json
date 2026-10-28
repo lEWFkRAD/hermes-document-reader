@@ -1,0 +1,8 @@
+{
+  "source": "OpenAI built-in imagegen",
+  "kind": "Concept illustration",
+  "sha256": "8dbc0d9593830fd1cd4b537b6c7d3cf6b1319d8b78a8a91b976aea189ce0cdff",
+  "prompts": [
+    "Use case: ads-marketing. Asset: premium public open-source homepage/repository banner, exactly wide 2:1 (2048x1024). Create an elegant editorial physical illustration for a document intake and OCR companion. Prominently integrate the exact title \"Hermes Document Reader\" in sophisticated charcoal typography on the left, carefully balanced over three lines if needed. The only subtitle is \"From pages to usable text\". On the right, a graceful fan of warm ivory document pages passes through a sculptural cobalt-blue translucent optical plane; on its far side, the pages resolve into orderly raised typographic bars and a simple small table grid. Convey readable extraction and review through paper, glass and brushed aluminum objects, not magical intelligence. A small pale terracotta index tab brings warmth. Clear pale limestone background, crisp studio daylight, exquisite paper edges, soft shadows, generous negative space. Maintain a 10% safe margin around all text. No actual document text or financial figures, client names, addresses, product screenshot, logos, security or all-local guarantees. Conceptual artwork, no privacy shield, network globe, robotic face, neon circuitry, tiny fake interface writing, watermark or extra slogans."
+  ]
+}
