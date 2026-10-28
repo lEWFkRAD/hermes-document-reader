@@ -1,3 +1,12 @@
+<!-- project-home:start -->
+![Hermes Document Reader concept banner](https://raw.githubusercontent.com/lEWFkRAD/hermes-document-reader/gh-pages/hero.png)
+
+**[Hermes Document Reader project homepage](https://lewfkrad.github.io/hermes-document-reader/)** · [Documentation](https://github.com/lEWFkRAD/hermes-document-reader#install-for-a-profile)
+
+Turn a profile’s incoming documents into readable text and structured workbook exports.
+
+<!-- project-home:end -->
+
 # Hermes Document Reader
 
 Hermes Document Reader is a Windows-only Hermes plugin for profile-scoped
