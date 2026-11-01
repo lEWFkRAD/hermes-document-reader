@@ -1,440 +1,209 @@
-/** Profile-aware Hermes Desktop and HUD extension for Document Reader. */
+import { host, PALETTE_AREA, ROUTE_AREA, SIDEBAR_AREA } from '@hermes/plugin-sdk';
+import * as React from 'react';
+import { jsx } from 'react/jsx-runtime';
 
-import {
-  COMPOSER_AREAS,
-  PALETTE_AREA,
-  ROUTES_AREA,
-  SIDEBAR_NAV_AREA,
-  host,
-  queryClient,
-  useQuery,
-  useValue,
-} from '@hermes/plugin-sdk'
-import * as React from 'react'
-import { jsx, jsxs } from 'react/jsx-runtime'
+function mountReader(container) {
+  const BASE = 'http://127.0.0.1:8898/api';
+  const TOKEN = '__READER_LOCAL_TOKEN__';
 
-const ID = 'document-reader'
-const VERSION = '0.1.0'
-const MAX_FILES = 10
-const MAX_FILE_BYTES = 100 * 1024 * 1024
-const ACCEPT = '.pdf,.png,.jpg,.jpeg,.tiff,.bmp'
-const TYPES = new Set(['pdf', 'png', 'jpg', 'jpeg', 'tiff', 'bmp'])
-const MIME = {
-  pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
-  tiff: 'image/tiff', bmp: 'image/bmp',
-}
-const hairline = '1px solid var(--ui-stroke-tertiary)'
-
-const S = {
-  root: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, fontSize: 13 },
-  toolbar: { display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', borderBottom: hairline, flexWrap: 'wrap' },
-  title: { color: 'var(--ui-text-primary)', fontWeight: 650, maxWidth: '30ch', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  quiet: { color: 'var(--ui-text-quaternary)' },
-  button: { border: 0, borderRadius: 4, background: 'var(--ui-bg-quaternary)', color: 'var(--ui-text-primary)', padding: '5px 10px', cursor: 'pointer', fontSize: 12 },
-  primary: { background: 'var(--ui-accent)', color: 'var(--theme-primary-foreground, #fff)' },
-  meter: { flex: 1, minWidth: 90, height: 2, overflow: 'hidden', background: 'var(--ui-stroke-tertiary)' },
-  queue: { display: 'flex', gap: 6, overflowX: 'auto', padding: '6px 14px', borderBottom: hairline, color: 'var(--ui-text-tertiary)' },
-  pages: { display: 'flex', gap: 4, overflowX: 'auto', padding: '6px 14px', borderBottom: hairline },
-  page: selected => ({ minWidth: 28, padding: '3px 7px', border: 0, borderRadius: 4, cursor: 'pointer', color: selected ? 'var(--ui-text-primary)' : 'var(--ui-text-tertiary)', background: selected ? 'var(--ui-bg-quaternary)' : 'transparent' }),
-  grid: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', minHeight: 0, flex: 1 },
-  pane: { position: 'relative', overflow: 'auto', minWidth: 0 },
-  right: { position: 'relative', overflow: 'auto', minWidth: 0, borderLeft: hairline },
-  label: { position: 'sticky', top: 0, zIndex: 5, padding: '5px 12px', borderBottom: hairline, background: 'var(--ui-bg-primary)', color: 'var(--ui-text-quaternary)', fontSize: 10, letterSpacing: '.08em', textTransform: 'uppercase' },
-  empty: { height: '100%', minHeight: 180, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, padding: 24, textAlign: 'center' },
-  pre: { margin: 0, padding: 16, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', color: 'var(--ui-text-secondary)', fontFamily: 'var(--font-mono, Consolas, monospace)', lineHeight: 1.5 },
-  history: { maxHeight: 230, overflowY: 'auto', borderTop: hairline },
-  row: { padding: '8px 14px', borderBottom: hairline },
-  overlay: { position: 'absolute', inset: 8, zIndex: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1.5px dashed var(--ui-accent)', borderRadius: 8, background: 'color-mix(in srgb, var(--ui-bg-primary) 88%, transparent)', color: 'var(--ui-text-primary)', fontWeight: 650, pointerEvents: 'none' },
-}
-const OFFSCREEN_INPUT = { position: 'fixed', left: -10000, top: -10000, width: 1, height: 1, opacity: 0, pointerEvents: 'none' }
-
-function extension(name) {
-  const match = String(name || '').toLowerCase().match(/\.([a-z0-9]+)$/)
-  return match ? match[1] : ''
-}
-
-function validateFiles(input) {
-  const files = [...(input || [])]
-  if (!files.length) return []
-  if (files.length > MAX_FILES) throw new Error(`Choose at most ${MAX_FILES} files at once`)
-  for (const file of files) {
-    const ext = extension(file.name)
-    if (!TYPES.has(ext)) throw new Error(`${file.name}: unsupported file type`)
-    if (!Number.isFinite(file.size) || file.size <= 0) throw new Error(`${file.name}: file is empty`)
-    if (file.size > MAX_FILE_BYTES) throw new Error(`${file.name}: exceeds the 100 MiB limit`)
-  }
-  return files
-}
-
-function isFileDrag(event) {
-  return [...(event.dataTransfer?.types || [])].includes('Files')
-}
-
-function openFileInput(input) {
-  if (!input) return
-  try {
-    if (typeof input.showPicker === 'function') input.showPicker()
-    else input.click()
-  } catch {
-    input.click()
-  }
-}
-
-function validIdentity(value) {
-  return value && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(String(value.profile || ''))
-    && /^[0-9a-f]{64}$/.test(String(value.profile_fingerprint || ''))
-}
-
-function humanJobState(value) {
-  return ({
-    loading: 'opening file',
-    rendering: 'preparing pages',
-    ocr: 'recognizing text',
-    finished: 'complete',
-    finished_with_errors: 'complete with review needed',
-    failed: 'failed',
-    cancelled: 'stopped',
-    quarantined: 'quarantined',
-  })[String(value || '')] || 'ready'
-}
-
-async function uploadFiles(ctx, input, expected = null) {
-  const files = validateFiles(input)
-  if (!files.length) return 0
-  let identity = expected
-  if (!validIdentity(identity)) identity = await ctx.rest('/state', { timeoutMs: 5000 })
-  if (!validIdentity(identity)) throw new Error('profile identity is unavailable')
-  if (expected?.profile && String(identity.profile) !== String(expected.profile)) {
-    throw new Error('profile changed before upload')
-  }
-  const assertion = `expected_profile=${encodeURIComponent(identity.profile)}&expected_fingerprint=${encodeURIComponent(identity.profile_fingerprint)}`
-  let accepted = 0
-  for (const file of files) {
-    const ext = extension(file.name)
-    const bytes = await file.arrayBuffer()
-    if (bytes.byteLength !== file.size || bytes.byteLength > MAX_FILE_BYTES) {
-      throw new Error(`${file.name}: file changed while it was being read`)
-    }
-    const result = await ctx.rest(`/upload?${assertion}`, {
-      method: 'POST',
-      upload: { filename: file.name, contentType: MIME[ext], bytes },
-      timeoutMs: 180000,
-    })
-    if (!result?.ok) throw new Error(`${file.name}: service did not accept the upload`)
-    if (result.profile !== identity.profile || result.profile_fingerprint !== identity.profile_fingerprint) {
-      throw new Error('profile changed during upload')
-    }
-    accepted += 1
-  }
-  return accepted
-}
-
-function chooseFiles() {
-  return new Promise((resolve, reject) => {
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.multiple = true
-    input.accept = ACCEPT
-    input.style.cssText = 'position:fixed;left:-10000px;top:-10000px;width:1px;height:1px;opacity:0;pointer-events:none'
-    let settled = false
-    let focusTimer = null
-    const cleanup = () => {
-      if (focusTimer !== null) window.clearTimeout(focusTimer)
-      window.removeEventListener('focus', onFocus)
-      input.removeEventListener('change', onChange)
-      input.removeEventListener('cancel', onCancel)
-      input.remove()
-    }
-    const finish = files => {
-      if (settled) return
-      settled = true
-      cleanup()
-      resolve(files)
-    }
-    const fail = error => {
-      if (settled) return
-      settled = true
-      cleanup()
-      reject(error)
-    }
-    const onChange = () => finish([...(input.files || [])])
-    const onCancel = () => finish([])
-    const onFocus = () => {
-      focusTimer = window.setTimeout(() => {
-        if (!input.files?.length) finish([])
-      }, 400)
-    }
-    input.addEventListener('change', onChange)
-    input.addEventListener('cancel', onCancel)
-    window.addEventListener('focus', onFocus)
-    document.body.appendChild(input)
-    try {
-      if (typeof input.showPicker === 'function') input.showPicker()
-      else input.click()
-    } catch (firstError) {
-      try { input.click() } catch { fail(firstError) }
-    }
-  })
-}
-
-async function hudUpload(ctx, insertText) {
-  const files = await chooseFiles()
-  if (!files.length) return
-  try {
-    const count = await uploadFiles(ctx, files)
-    insertText(`\n[Document Reader queued ${count} file${count === 1 ? '' : 's'}]\n`)
-    host.notify({ kind: 'info', message: `${count} document${count === 1 ? '' : 's'} queued` })
-  } catch {
-    host.notify({ kind: 'error', message: 'Document Reader could not finish the batch; check its queue' })
-  }
-}
-
-function useProfileReset() {
-  const profile = useValue(host.state.profile) || 'default'
-  const previous = React.useRef(profile)
-  React.useEffect(() => {
-    if (previous.current !== profile) {
-      queryClient.removeQueries({ queryKey: [ID, previous.current] })
-      previous.current = profile
-    }
-  }, [profile])
-  return profile
+      let disposed = false, generation = 0, allowed = false, token = '', active = null;
+      const root = document.createElement('section');
+      root.className = 'anydoc-reader';
+      root.innerHTML = `<style>
+        .anydoc-reader{--dr-bg:var(--background,#10151c);--dr-card:var(--card,#171e28);--dr-text:var(--foreground,#e0e7ef);--dr-muted:var(--muted-foreground,#92a1b4);--dr-border:var(--border,#303b49);--dr-accent:var(--accent,#89b7ed);height:100%;min-height:440px;display:flex;flex-direction:column;background:var(--dr-bg);color:var(--dr-text);font:13px system-ui;box-sizing:border-box}
+        .anydoc-reader *{box-sizing:border-box}.anydoc-reader button{border:1px solid var(--dr-border);border-radius:7px;background:var(--dr-card);color:var(--dr-text);padding:8px 13px;cursor:pointer;font:inherit}.anydoc-reader button:hover:not(:disabled){border-color:var(--dr-accent)}.anydoc-reader button:disabled{opacity:.4;cursor:default}.anydoc-reader [data-convert]{background:#28486b;border-color:#45698d;color:#edf5ff}
+        .dr-header{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:18px 22px;border-bottom:1px solid var(--dr-border)}.dr-header h2{font-size:18px;font-weight:600;margin:0 0 5px}.dr-subtitle{color:var(--dr-muted);font-size:12px}.dr-actions{display:flex;gap:8px;align-items:center}.dr-status{padding:10px 22px;color:var(--dr-muted);border-bottom:1px solid var(--dr-border);font-size:12px}.dr-status:before{content:'●';color:#80bb9b;margin-right:8px}
+        .dr-workspace{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.dr-pane{min-width:0;min-height:0;display:flex;flex-direction:column}.dr-pane:first-child{border-right:1px solid var(--dr-border)}.dr-pane-head{display:flex;align-items:center;justify-content:space-between;padding:13px 18px;border-bottom:1px solid var(--dr-border);background:var(--dr-card);gap:10px}.dr-label{font-size:10px;letter-spacing:1.5px;font-weight:700;color:var(--dr-muted)}.dr-filename{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:70%;font-size:12px}.dr-source{flex:1;min-height:0;overflow:auto;position:relative;background:#0d1118}.dr-source iframe{width:100%;height:100%;min-height:360px;border:0;display:block;background:#c5c5c5}.dr-source pre{margin:24px;padding:26px;background:#f3f1ec;color:#242a32;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7;border-radius:3px;min-height:260px;font:13px ui-monospace,monospace}.dr-empty{height:100%;min-height:300px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:12px;padding:35px;color:var(--dr-muted)}.dr-empty strong{color:var(--dr-text);font-size:16px;font-weight:500}.dr-icon{width:54px;height:65px;border:1px solid var(--dr-border);border-radius:7px;font-size:26px;display:grid;place-items:center;margin-bottom:6px}.dr-output{flex:1;min-height:0;overflow:auto;position:relative}.dr-output pre{margin:0;padding:24px;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.8 ui-monospace,SFMono-Regular,Consolas,monospace;user-select:text}.dr-output pre:empty{display:none}.dr-output:has(pre:not(:empty)) .dr-empty{display:none}.dr-footer{min-height:39px;padding:11px 22px;border-top:1px solid var(--dr-border);color:var(--dr-muted);font-size:12px}.dr-progress{height:2px;background:transparent;overflow:hidden}.anydoc-reader[data-busy=true] .dr-progress:after{content:'';display:block;height:100%;width:35%;background:#82b5ee;animation:dr-progress 1.6s ease-in-out infinite}@keyframes dr-progress{from{transform:translateX(-100%)}to{transform:translateX(390%)}}@media(prefers-reduced-motion:reduce){.anydoc-reader[data-busy=true] .dr-progress:after{animation:none;width:100%}}@media(max-width:650px){.dr-header{flex-wrap:wrap}.dr-actions{flex-wrap:wrap}.dr-workspace{grid-template-columns:1fr}.dr-pane{min-height:300px}.anydoc-reader{overflow:auto}}
+        .dr-source-stage{flex:1;min-height:0;position:relative;display:flex;overflow:hidden}.dr-source-stage .dr-source{width:100%}.dr-scan{display:none;position:absolute;inset:42px 18px 12px;pointer-events:none;z-index:3;overflow:hidden;border-radius:4px}.anydoc-reader[data-busy=true] .dr-scan{display:block}.dr-scan:before{content:'';position:absolute;left:0;right:0;top:-95px;height:95px;background:linear-gradient(transparent,color-mix(in srgb,var(--ui-success,#55e6a0) 16%,transparent));border-bottom:2px solid var(--ui-success,#55e6a0);box-shadow:0 9px 24px -10px var(--ui-success,#55e6a0);animation:dr-page-scan 2.8s linear infinite}.dr-scan-badge{position:absolute;right:12px;top:12px;background:var(--dr-card);border:1px solid var(--ui-success,#55e6a0);color:var(--ui-success,#55e6a0);padding:6px 10px;border-radius:20px;font:10px ui-monospace,monospace;letter-spacing:1.2px;box-shadow:0 2px 12px #0004}.dr-scan-badge:before{content:'●';margin-right:7px;animation:dr-scan-pulse 1s ease-in-out infinite}@keyframes dr-page-scan{from{top:-95px}to{top:100%}}@keyframes dr-scan-pulse{50%{opacity:.3}}@media(prefers-reduced-motion:reduce){.dr-scan:before{animation:none;top:40%}.dr-scan-badge:before{animation:none}}
+        .dr-page-controls{display:flex;align-items:center;gap:7px;white-space:nowrap;font-size:11px}.dr-page-controls[hidden]{display:none}.dr-page-controls button{padding:2px 8px}.dr-page-image{display:block;width:calc(100% - 40px);height:auto;margin:20px;box-shadow:0 3px 20px #0005}.dr-dragover .dr-source-stage{outline:2px dashed var(--dr-accent);outline-offset:-7px}.dr-dragover .dr-source{opacity:.55}
+      </style>
+      <header class="dr-header"><div><h2>Document Reader</h2><div class="dr-subtitle">Original pages alongside extracted text</div></div><div class="dr-actions"><input data-file type="file" hidden accept=".pdf,.docx,.xlsx,.pptx,.csv"><button data-choose>Open document</button><button data-convert disabled>Read document</button><button data-save disabled>Save Markdown</button><button data-health title="Reconnect to local reader" aria-label="Reconnect">↻</button></div></header>
+      <div class="dr-status" data-status>Checking reader…</div><div class="dr-progress" role="progressbar" aria-label="Document conversion" hidden></div>
+      <main class="dr-workspace"><section class="dr-pane"><div class="dr-pane-head"><span class="dr-label">SOURCE DOCUMENT</span><span class="dr-filename" data-filename>No document selected</span></div><div class="dr-source-stage"><div class="dr-source" data-source><div class="dr-empty"><span class="dr-icon">▤</span><strong>Your pages go here</strong><span>Open a PDF to view its pages while it is read.<br>PDF · Word · Excel · PowerPoint · CSV</span></div></div><div class="dr-scan" aria-hidden="true"><span class="dr-scan-badge">READING</span></div></div></section>
+      <section class="dr-pane"><div class="dr-pane-head"><span class="dr-label">EXTRACTED TEXT</span><span class="dr-filename">Markdown</span></div><div class="dr-output"><div class="dr-empty"><span class="dr-icon">≡</span><strong>Output, side by side</strong><span data-output-hint>Extracted text appears here when processing completes.</span></div><pre data-result></pre></div></section></main><footer class="dr-footer" data-detail>AnyDoc · local network processing</footer>`;
+      container.append(root);
+      const $ = s => root.querySelector(s), status = $('[data-status]'), result = $('[data-result]'), detail = $('[data-detail]');
+      const convert = $('[data-convert]'), save = $('[data-save]'), fileInput = $('[data-file]');
+      const unsubs = [];
+      const source = $('[data-source]'), emptySource = source.innerHTML;
+      let sourceURL = null, selection = 0, selectedFile = null, stagedId = null;
+      let previewRequest = null, pageRequest = null, currentPage = 1, pageCount = 0, maxBytes = 0;
+      const pager = document.createElement('div'); pager.className = 'dr-page-controls'; pager.hidden = true;
+      pager.innerHTML = '<button data-prev aria-label="Previous page">‹</button><span data-page>Page 1</span><button data-next aria-label="Next page">›</button>';
+      source.closest('.dr-pane').querySelector('.dr-pane-head').append(pager);
+      function resetPreview() {
+        selection++; previewRequest?.abort(); pageRequest?.abort(); previewRequest = null; pageRequest = null;
+        if (sourceURL) URL.revokeObjectURL(sourceURL);
+        sourceURL = null; source.innerHTML = emptySource; stagedId = null; selectedFile = null;
+        currentPage = 1; pageCount = 0; pager.hidden = true;
+        $('[data-filename]').textContent = 'No document selected';
+      }
+      function busy(value) {
+        root.dataset.busy = String(value);
+        $('[role=progressbar]').hidden = !value;
+        $('[data-choose]').disabled = value;
+        fileInput.disabled = value;
+        $('[data-output-hint]').textContent = value ? 'Reading the document… output appears when processing completes.' : 'Extracted text appears here when processing completes.';
+      }
+      function sourceMessage(message) {
+        const note = document.createElement('div'); note.className = 'dr-empty'; note.textContent = message; source.replaceChildren(note);
+      }
+      async function showPage(number) {
+        const epoch = generation, selected = selection, id = stagedId;
+        if (!id || !pageCount || number < 1 || number > pageCount) return;
+        pageRequest?.abort(); const request = new AbortController(); pageRequest = request;
+        try {
+          const response = await fetch(`${BASE}/jobs/${id}/pages/${number}`, {headers:{Authorization:`Bearer ${token}`},signal:request.signal});
+          if (!response.ok) throw new Error(`Page preview: HTTP ${response.status}`);
+          const image = await response.blob();
+          if (disposed || epoch !== generation || selected !== selection || request.signal.aborted) return;
+          const url = URL.createObjectURL(image), img = document.createElement('img');
+          img.alt = `Original document, page ${number} of ${pageCount}`; img.src = url; img.className = 'dr-page-image';
+          source.replaceChildren(img); if(sourceURL) URL.revokeObjectURL(sourceURL); sourceURL = url;
+          currentPage = number; $('[data-page]').textContent = `Page ${number} / ${pageCount}`;
+          $('[data-prev]').disabled = number <= 1; $('[data-next]').disabled = number >= pageCount; pager.hidden = false;
+        } catch(e) { if(!request.signal.aborted && epoch===generation && selected===selection) detail.textContent=e.message; }
+      }
+      $('[data-prev]').onclick=()=>void showPage(currentPage-1);
+      $('[data-next]').onclick=()=>void showPage(currentPage+1);
+      $('[data-choose]').onclick = () => {
+        try { if(fileInput.showPicker) fileInput.showPicker(); else fileInput.click(); }
+        catch { fileInput.click(); }
+      };
+      async function selectFile(file) {
+        if (root.dataset.busy === 'true') {detail.textContent='Wait for the current document to finish before opening another.';return;}
+        resetPreview(); result.textContent = ''; save.disabled = true; convert.disabled = true;
+        if (!file) return;
+        const epoch = generation, selected = selection;
+        if (!allowed || !(await scopeOK()) || epoch !== generation || selected !== selection) {detail.textContent='Reader is not connected. Reconnect, then select the document again.';return;}
+        if (!/\.(pdf|docx|xlsx|pptx|csv)$/i.test(file.name)) {detail.textContent='Supported formats: PDF, Word, Excel, PowerPoint and CSV.';return;}
+        if (!maxBytes || file.size > maxBytes) {detail.textContent=`This file is ${(file.size/1048576).toFixed(1)} MiB. Current limit: ${(maxBytes/1048576).toFixed(0)} MiB.`;sourceMessage(detail.textContent);return;}
+        selectedFile=file; $('[data-filename]').textContent=file.name;
+        sourceMessage('Uploading document for preview…'); detail.textContent=`Uploading ${file.name} · ${(file.size/1048576).toFixed(1)} MiB`;
+        const request = new AbortController(); previewRequest=request;
+        try {
+          const response=await fetch(`${BASE}/upload?name=${encodeURIComponent(file.name)}&preview=1`,{method:'POST',headers:{Authorization:`Bearer ${token}`},body:file,signal:request.signal});
+          const data=await response.json();
+          if(disposed || epoch!==generation || selected!==selection) return;
+          if(!response.ok) throw new Error(data.error?.message || `Upload: HTTP ${response.status}`);
+          stagedId=data.job.id; convert.disabled=false;
+          if(/\.pdf$/i.test(file.name)) {
+            const pages=await fetch(`${BASE}/jobs/${stagedId}/pages`,{headers:{Authorization:`Bearer ${token}`},signal:request.signal});
+            if(!pages.ok) throw new Error(`Cannot preview this PDF (HTTP ${pages.status}). Check whether it is encrypted or damaged.`);
+            const info=await pages.json(); if(disposed || epoch!==generation || selected!==selection) return;
+            pageCount=info.pages; await showPage(1);
+          } else if(/\.csv$/i.test(file.name)) {
+            const text=await file.slice(0,250000).text(); if(disposed || epoch!==generation || selected!==selection) return;
+            const pre=document.createElement('pre');pre.textContent=text;source.replaceChildren(pre);
+          } else sourceMessage('Document uploaded. Page preview is available for PDFs; select Read document to extract this file.');
+          if(epoch===generation && selected===selection) detail.textContent=`Ready to read${pageCount ? ` · ${pageCount} pages` : ''} · ${(file.size/1048576).toFixed(1)} MiB · uploaded once`;
+        } catch(e) {if(!request.signal.aborted && epoch===generation && selected===selection){detail.textContent=e.message;sourceMessage(e.message);}}
+      }
+      fileInput.onchange=()=>void selectFile(fileInput.files[0]);
+      const fileDrag=e=>Array.from(e.dataTransfer?.types || []).includes('Files');
+      const dragEnter=e=>{if(!fileDrag(e))return;e.preventDefault();e.stopPropagation();root.classList.add('dr-dragover');};
+      const dragOver=e=>{if(!fileDrag(e))return;e.preventDefault();e.stopPropagation();e.dataTransfer.dropEffect=root.dataset.busy==='true'?'none':'copy';};
+      const dragLeave=e=>{if(!root.contains(e.relatedTarget))root.classList.remove('dr-dragover');};
+      const drop=e=>{if(!fileDrag(e))return;e.preventDefault();e.stopPropagation();root.classList.remove('dr-dragover');const files=Array.from(e.dataTransfer.files);if(files.length!==1){detail.textContent='Drop one document at a time.';return;}void selectFile(files[0]);};
+      for(const [type,fn] of [['dragenter',dragEnter],['dragover',dragOver],['dragleave',dragLeave],['drop',drop]]) {root.addEventListener(type,fn,true);unsubs.push(()=>root.removeEventListener(type,fn,true));}
+      function clear() { resetPreview(); busy(false); generation++; allowed = false; token = ''; active?.abort(); active = null; result.textContent = ''; detail.textContent = ''; fileInput.value = ''; convert.disabled = true; save.disabled = true; }
+      async function scopeOK() {
+        const owner = host.state.focusedSessionOwner?.get();
+        const profile = owner?.profile || host.state.profile.get();
+        if (profile !== 'default') return false;
+        // Fail OPEN on route-list errors: profileRoutes() enumerates every
+        // registry connection (can take ~10s) and can transiently fail;
+        // health + identity checks still gate.
+        let routes; try { routes = await host.profileRoutes(); } catch { return true; }
+        const conn = owner?.connectionId || host.state.connectionId?.get() || 'local';
+        // The reader server only ever runs on this PC: only a focused session
+        // on the LOCAL route (mode 'local', default profile) may use it.
+        const match = routes.find(r => r.connectionId === conn);
+        if (!match || match.mode !== 'local' || match.profile !== 'default') return false;
+        return true;
+      }
+      async function connect() {
+        clear(); const epoch = generation;
+        status.textContent = 'Checking local AnyDoc reader…';
+        try {
+          if (!(await scopeOK())) throw new Error('Reader is local to this PC and its default profile. Switch back to the local default profile.');
+          const response = await fetch(`${BASE}/health`, {headers:{Authorization:`Bearer ${TOKEN}`}, signal: AbortSignal.timeout(12000)});
+          if (!response.ok) throw new Error(`Reader health: HTTP ${response.status}`);
+          const data = await response.json();
+          if (disposed || epoch !== generation) return;
+          if (!data.ok) throw new Error(data.error || 'AnyDoc is unavailable');
+          if (data.service !== 'anydoc-desktop-reader' || data.profile !== 'default') throw new Error('Reader identity mismatch');
+          token = TOKEN; allowed = true; maxBytes = data.max_upload_bytes; convert.disabled = true;
+          status.textContent = `Ready · drop or open a document · up to ${(maxBytes/1048576).toFixed(0)} MiB · local network only`;
+        } catch (e) { if (!disposed && epoch === generation) status.textContent = `Not ready: ${e.message}`; }
+      }
+      convert.onclick = async () => {
+        const file = selectedFile;
+        if (!file) { detail.textContent = 'Choose a document first.'; return; }
+        if (!stagedId || file.size > maxBytes) { detail.textContent = 'Wait for the upload to finish, or choose a file within the displayed limit.'; return; }
+        const epoch = generation;
+        if (!allowed || !(await scopeOK()) || epoch !== generation) return;
+        busy(true); convert.disabled = true; save.disabled = true; result.textContent = '';
+        detail.textContent = `Reading ${file.name}… scanned documents may take a few minutes.`;
+        active = new AbortController();
+        try {
+          const headers = {Authorization:`Bearer ${token}`};
+          const signal = active.signal;
+          const response = await fetch(`${BASE}/jobs/${stagedId}/start`, {method:'POST', headers, signal});
+          const data = await response.json();
+          if (epoch !== generation || disposed) return;
+          if (!response.ok) throw new Error(data.error?.message || `HTTP ${response.status}`);
+          const id = data.job.id;
+          const deadline = Date.now() + 1600000;
+          while (Date.now() < deadline) {
+            if (epoch !== generation || disposed) return;
+            const poll = await fetch(`${BASE}/jobs`, {headers, signal});
+            if (!poll.ok) throw new Error(`Status: HTTP ${poll.status}`);
+            const job = (await poll.json()).jobs.find(j => j.id === id);
+            if (epoch !== generation || disposed) return;
+            if (!job) throw new Error('Conversion job was not found');
+            if (job.status === 'failed') throw new Error(job.error || 'Conversion failed');
+            if (job.status === 'completed') {
+              const output = await fetch(`${BASE}/jobs/${id}/text`, {headers, signal});
+              if (!output.ok) throw new Error(`Output: HTTP ${output.status}`);
+              const markdown = await output.text();
+              if (epoch !== generation || disposed) return;
+              result.textContent = markdown;
+              detail.textContent = `Read ${file.name} · ${markdown.length.toLocaleString()} characters`;
+              save.disabled = false;
+              return;
+            }
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+          throw new Error('Conversion timed out. The local job may still be running.');
+        } catch (e) { if (!disposed && epoch === generation) detail.textContent = `Read failed: ${e.message}`; }
+        finally { if (!disposed && epoch === generation) { busy(false); convert.disabled = !allowed; active = null; } }
+      };
+      save.onclick = () => {
+        if (!allowed || !result.textContent) return;
+        const a = document.createElement('a'); const url = URL.createObjectURL(new Blob([result.textContent], {type:'text/markdown;charset=utf-8'}));
+        a.href = url; a.download = (selectedFile?.name || 'document').replace(/\.[^.]+$/, '') + '.md'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      };
+      $('[data-health]').onclick = connect;
+      for (const key of ['profile','connectionId','focusedSessionOwner']) {
+        const atom = host.state[key]; if (atom?.listen) unsubs.push(atom.listen(() => { void connect(); }));
+      }
+      void connect();
+      return () => { disposed = true; clear(); unsubs.forEach(fn => fn()); root.remove(); };
 }
 
-function useReaderState(ctx, profile) {
-  return useQuery({
-    queryKey: [ID, profile, 'state'],
-    queryFn: () => ctx.rest('/state', { timeoutMs: 5000 }),
-    refetchInterval: 850,
-    retry: 1,
-  })
-}
-
-function useAsset(ctx, profile, jobId, filename) {
-  return useQuery({
-    queryKey: [ID, profile, 'asset', jobId, filename],
-    queryFn: () => ctx.rest(`/asset/${encodeURIComponent(jobId)}/${encodeURIComponent(filename)}`, { timeoutMs: 30000 }),
-    enabled: Boolean(jobId && filename),
-    staleTime: Infinity,
-    gcTime: 15000,
-    retry: 1,
-  })
-}
-
-function decodeBase64(value) {
-  const raw = atob(value)
-  const bytes = new Uint8Array(raw.length)
-  for (let i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i)
-  return bytes
-}
-
-function PageImage({ ctx, profile, jobId, page }) {
-  const asset = useAsset(ctx, profile, jobId, `page_${page}.jpg`)
-  if (asset.isError) return jsx('div', { style: S.empty, children: 'Page preview unavailable' })
-  if (!asset.data?.data) return jsx('div', { style: S.empty, children: 'Loading page preview…' })
-  const src = `data:${asset.data.content_type};base64,${asset.data.data}`
-  return jsx('img', { src, alt: `Page ${page}`, style: { width: '100%', display: 'block' } })
-}
-
-function PageText({ ctx, profile, job, page }) {
-  const pageState = job?.pages?.[page - 1]
-  const asset = useAsset(ctx, profile, job?.id, pageState?.state === 'done' ? `page_${page}.html` : '')
-  if (pageState?.state === 'working') return jsx('pre', { style: S.pre, children: job.partial || 'Reading…' })
-  if (pageState?.state === 'error') return jsx('div', { style: S.empty, children: `Page could not be read: ${pageState.error || 'unknown error'}` })
-  if (pageState?.state !== 'done') return jsx('div', { style: S.empty, children: 'Not read yet' })
-  if (asset.isError) return jsx('div', { style: S.empty, children: 'Recognized text unavailable' })
-  if (!asset.data?.html) return jsx('div', { style: S.empty, children: 'Loading recognized text…' })
-  const parsed = new DOMParser().parseFromString(asset.data.html, 'text/html')
-  return jsx('pre', { style: S.pre, children: parsed.body.textContent || '' })
-}
-
-async function downloadAsset(ctx, jobId, filename) {
-  try {
-    const asset = await ctx.rest(`/asset/${encodeURIComponent(jobId)}/${encodeURIComponent(filename)}`, { timeoutMs: 60000 })
-    if (asset?.kind !== 'binary' || asset.encoding !== 'base64') throw new Error('download response was invalid')
-    const blob = new Blob([decodeBase64(asset.data)], { type: asset.content_type })
-    const url = URL.createObjectURL(blob)
-    try {
-      const anchor = document.createElement('a')
-      anchor.href = url
-      anchor.download = asset.name || filename
-      document.body.appendChild(anchor)
-      anchor.click()
-      anchor.remove()
-    } finally {
-      window.setTimeout(() => URL.revokeObjectURL(url), 0)
-    }
-  } catch (error) {
-    host.notify({ kind: 'error', message: `Download failed: ${error?.message || error}` })
-  }
-}
-
-function Reader({ ctx }) {
-  const profile = useProfileReset()
-  const query = useReaderState(ctx, profile)
-  const [selected, setSelected] = React.useState(null)
-  const [historyOpen, setHistoryOpen] = React.useState(false)
-  const [dragging, setDragging] = React.useState(false)
-  const [uploading, setUploading] = React.useState(false)
-  const inputRef = React.useRef(null)
-  const dragDepth = React.useRef(0)
-  const inFlight = React.useRef(false)
-  const previousJob = React.useRef(null)
-  const state = query.data?.service
-  const job = state?.job
-
-  React.useEffect(() => {
-    setSelected(null)
-    setHistoryOpen(false)
-    setDragging(false)
-    dragDepth.current = 0
-  }, [profile])
-  React.useEffect(() => setSelected(null), [job?.id])
-  React.useEffect(() => {
-    if (previousJob.current && previousJob.current !== job?.id) {
-      queryClient.removeQueries({ queryKey: [ID, profile, 'asset', previousJob.current] })
-    }
-    previousJob.current = job?.id || null
-  }, [profile, job?.id])
-
-  const send = React.useCallback(async input => {
-    if (inFlight.current) return
-    inFlight.current = true
-    setUploading(true)
-    try {
-      const count = await uploadFiles(ctx, input, {
-        profile,
-        profile_fingerprint: query.data?.profile_fingerprint,
-      })
-      if (count) host.notify({ kind: 'info', message: `${count} document${count === 1 ? '' : 's'} queued for ${profile}` })
-      await query.refetch()
-    } catch (error) {
-      host.notify({ kind: 'error', message: `Document Reader upload failed: ${error?.message || error}` })
-    } finally {
-      inFlight.current = false
-      setUploading(false)
-    }
-  }, [ctx, profile, query])
-
-  const onDragEnter = event => {
-    if (!isFileDrag(event)) return
-    event.preventDefault(); event.stopPropagation(); dragDepth.current += 1; setDragging(true)
-  }
-  const onDragOver = event => {
-    if (!isFileDrag(event)) return
-    event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'copy'
-  }
-  const onDragLeave = event => {
-    if (!isFileDrag(event) && dragDepth.current === 0) return
-    event.preventDefault(); event.stopPropagation(); dragDepth.current = Math.max(0, dragDepth.current - 1)
-    if (dragDepth.current === 0) setDragging(false)
-  }
-  const onDrop = event => {
-    if (!isFileDrag(event)) return
-    event.preventDefault(); event.stopPropagation(); dragDepth.current = 0; setDragging(false)
-    const files = [...(event.dataTransfer?.files || [])]
-    if (files.length) void send(files)
-  }
-
-  if (query.isError) {
-    const selector = profile === 'default' ? '' : `-p ${profile} `
-    return jsxs('div', { style: { ...S.root, ...S.empty }, children: [
-      jsx('strong', { children: `Document Reader is not ready for profile “${profile}”` }),
-      jsx('span', { style: S.quiet, children: `Run hermes ${selector}document-reader status, then configure, install, or recover as reported.` }),
-    ] })
-  }
-  if (!state) return jsx('div', { style: { ...S.root, ...S.empty }, children: 'Loading Document Reader…' })
-
-  const shown = selected ?? (job ? Math.max(1, job.state === 'finished' ? job.total : job.current || 1) : 0)
-  const progress = job?.total ? `${Math.min(100, (100 * job.done) / job.total)}%` : '0%'
-  const queue = state.queue || []
-  const active = Boolean(job && !['finished', 'finished_with_errors', 'failed', 'cancelled', 'quarantined'].includes(job.state))
-
-  const cancel = async () => {
-    try {
-      await ctx.rest('/cancel', { method: 'POST', timeoutMs: 5000 })
-      host.notify({ kind: 'info', message: 'Stopping the current document' })
-    } catch (error) {
-      host.notify({ kind: 'error', message: `Could not stop the document: ${error?.message || error}` })
-    }
-  }
-
-  const history = historyOpen ? jsx('div', { style: S.history, children: (state.history || []).length
-    ? state.history.map(item => jsxs('div', { style: S.row, children: [
-        jsx('div', { style: S.title, children: item.name }),
-        jsx('div', { style: { ...S.quiet, margin: '3px 0 6px' }, children: `${item.when} · ${item.pages} page${item.pages === 1 ? '' : 's'} · ${Math.round(item.secs)}s` }),
-        jsxs('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' }, children: [
-          ...Object.entries(item.files || {}).map(([kind, name]) => jsx('button', { type: 'button', style: S.button, onClick: () => void downloadAsset(ctx, item.id, name), children: `Download ${kind.toUpperCase()}` }, `${kind}:${name}`)),
-        ] }),
-      ] }, item.id))
-    : jsx('div', { style: S.row, children: 'No completed documents yet' }) }) : null
-
-  return jsxs('div', {
-    style: S.root,
-    onDragEnterCapture: onDragEnter,
-    onDragOverCapture: onDragOver,
-    onDragLeaveCapture: onDragLeave,
-    onDropCapture: onDrop,
-    children: [
-      dragging ? jsx('div', { style: S.overlay, children: 'Drop up to 10 supported documents' }) : null,
-      jsxs('div', { style: S.toolbar, children: [
-        jsx('span', { style: S.title, children: job?.current_file || 'Document Reader' }),
-        jsx('span', { style: S.quiet, children: `${profile} · ${humanJobState(job?.state)}` }),
-        jsx('div', { style: S.meter, children: jsx('div', { style: { width: progress, height: '100%', background: 'var(--ui-accent)', transition: 'width .3s' } }) }),
-        jsx('button', { type: 'button', style: { ...S.button, ...S.primary }, disabled: uploading, onClick: () => openFileInput(inputRef.current), children: uploading ? 'Uploading…' : 'Scan documents' }),
-        job && !['finished', 'finished_with_errors', 'failed', 'cancelled', 'quarantined'].includes(job.state)
-          ? jsx('button', { type: 'button', style: S.button, onClick: () => void cancel(), children: 'Stop' }) : null,
-        jsx('button', { type: 'button', style: S.button, onClick: () => setHistoryOpen(value => !value), children: historyOpen ? 'Hide finished' : 'Finished files' }),
-        jsx('input', { ref: inputRef, type: 'file', accept: ACCEPT, multiple: true, style: OFFSCREEN_INPUT, tabIndex: -1, onChange: event => {
-          const files = [...(event.target.files || [])]; event.target.value = ''; if (files.length) void send(files)
-        } }),
-      ] }),
-      jsx('div', { style: S.queue, children: [
-        jsx('strong', { children: `Queue · ${active ? '1 active' : 'clear'} · ${queue.length} waiting` }),
-        ...queue.slice(0, 12).map((item, index) => jsx('span', { children: item.name }, `${index}:${item.name}`)),
-        queue.length > 12 ? jsx('span', { children: `+${queue.length - 12} more` }) : null,
-      ] }),
-      job ? jsx('div', { style: S.pages, children: (job.pages || []).map(page => jsx('button', { type: 'button', style: S.page(page.n === shown), onClick: () => setSelected(page.n), children: String(page.n) }, page.n)) }) : null,
-      jsxs('div', { style: S.grid, children: [
-        jsxs('div', { style: S.pane, children: [
-          jsx('div', { style: S.label, children: `Scanned page${shown ? ` · ${shown}` : ''}` }),
-          job && shown ? jsx(PageImage, { ctx, profile, jobId: job.id, page: shown }) : jsxs('div', {
-            style: { ...S.empty, cursor: 'pointer' },
-            role: 'button',
-            tabIndex: 0,
-            onClick: () => openFileInput(inputRef.current),
-            onKeyDown: event => {
-              if (event.key === 'Enter' || event.key === ' ') {
-                event.preventDefault(); openFileInput(inputRef.current)
-              }
-            },
-            children: [jsx('strong', { children: 'Drop documents here' }), jsx('span', { style: S.quiet, children: 'Click or press Enter · PDF, PNG, JPEG, TIFF, or BMP · 100 MiB each · 10 at a time' })],
-          }),
-        ] }),
-        jsxs('div', { style: S.right, children: [
-          jsx('div', { style: S.label, children: `Recognized text${shown ? ` · ${shown}` : ''}` }),
-          job && shown ? jsx(PageText, { ctx, profile, job, page: shown }) : jsx('div', { style: S.empty, children: 'Recognized text appears here' }),
-        ] }),
-      ] }),
-      history,
-    ],
-  })
+function Reader() {
+  const ref = React.useRef(null);
+  React.useEffect(() => mountReader(ref.current), []);
+  return jsx('div', {ref, style: {height:'100%', overflow:'auto'}});
 }
 
 export default {
-  id: ID,
-  version: VERSION,
-  name: 'Document Reader',
-  description: `Profile-scoped Document Reader (${VERSION}) with Desktop and HUD uploads`,
-  defaultEnabled: false,
+  id: 'document-reader', version: '0.2.2', name: 'Document Reader',
+  description: 'Local Firecrawl AnyDoc document reader', defaultEnabled: false,
   register(ctx) {
-    ctx.register({ id: 'page', area: ROUTES_AREA, data: { path: '/document-reader' }, render: () => jsx(Reader, { ctx }) })
-    ctx.register({ id: 'nav', area: SIDEBAR_NAV_AREA, data: { path: '/document-reader', label: 'Document Reader', codicon: 'file-pdf' } })
-    ctx.register({ id: 'open', area: PALETTE_AREA, data: { id: 'document-reader.open', label: 'Document Reader: Open', keywords: ['ocr', 'scan', 'pdf', 'document'], run: () => host.navigate('/document-reader') } })
-    ctx.register({
-      id: 'hud-attachment',
-      area: COMPOSER_AREAS.attachments,
-      data: { label: 'Scan with Document Reader', icon: 'file-pdf', run: ({ insertText }) => hudUpload(ctx, insertText) },
-    })
-  },
-}
+    ctx.register({id:'page', area:ROUTES_AREA, data:{path:'/document-reader'}, render:()=>jsx(Reader,{})});
+    ctx.register({id:'nav', area:SIDEBAR_NAV_AREA, data:{path:'/document-reader',label:'Document Reader',codicon:'file-pdf'}});
+    ctx.register({id:'open', area:PALETTE_AREA, data:{id:'document-reader.open',label:'Document Reader: Open',keywords:['ocr','pdf','document','anydoc'],run:()=>host.navigate('/document-reader')}});
+  }
+};
