@@ -215,7 +215,7 @@ test("runtime and development requirements are exact reviewed pins", async () =>
     "requirements.txt must install the anydoc module imported by the MCP server",
   );
   assert.ok(
-    runtime.includes("fastapi==0.141.1"),
+    runtime.includes("fastapi==0.162.0"),
     "requirements.txt must pin the dashboard API framework",
   );
   assert.ok(
@@ -231,7 +231,7 @@ test("runtime and development requirements are exact reviewed pins", async () =>
   assert.ok(development.includes("pip==26.2.2"), "CI bootstrap pip pin must be explicit");
   assert.ok(development.includes("PyYAML==6.0.3"), "archive YAML parsing must be pinned");
   assert.ok(
-    development.includes("setuptools==84.1.0"),
+    development.includes("setuptools==84.2.1"),
     "the fully resolved environment must include the reviewed setuptools security fix",
   );
 });
@@ -245,7 +245,7 @@ test("Windows service locks are complete, hashed, lane-bound, and archive-allowl
   for (const packages of result.locks.values()) {
     assert.equal(packages.size, 32);
     assert.equal(packages.get("pip").version, "26.2.2");
-    assert.equal(packages.get("setuptools").version, "84.1.0");
+    assert.equal(packages.get("setuptools").version, "84.2.1");
     for (const requirement of packages.values()) assert.ok(requirement.hashes.length > 0);
   }
 });
@@ -273,7 +273,7 @@ test("service lock parser tolerates CRLF but rejects target, pin, and hash drift
     relativePath: "fixture-lock.txt",
   };
   const direct = parseExactRequirements(
-    "alpha==1.0\r\npip==26.2.2\r\nsetuptools==84.1.0\r\n",
+    "alpha==1.0\r\npip==26.2.2\r\nsetuptools==84.2.1\r\n",
     "fixture requirements",
   );
   const hashA = "a".repeat(64);
@@ -290,7 +290,7 @@ test("service lock parser tolerates CRLF but rejects target, pin, and hash drift
     `    --hash=sha256:${"d".repeat(64)}`,
     "pip==26.2.2 \\",
     `    --hash=sha256:${hashB}`,
-    "setuptools==84.1.0 \\",
+    "setuptools==84.2.1 \\",
     `    --hash=sha256:${"c".repeat(64)}`,
     "",
   ].join("\r\n");
