@@ -5,7 +5,7 @@ filetype==1.2.0
 firecrawl-anydoc==0.2.4
 httpx==0.28.1
 mcp==2.2.0
-openai==3.19.2
+openai==3.37.0
 openpyxl==3.1.5
-pypdfium2==5.13.0
+pypdfium2==5.14.0
 python-multipart==0.0.32
