@@ -16,6 +16,36 @@ SPEC.loader.exec_module(service)
 
 
 class ServiceHelpersTest(unittest.TestCase):
+    def test_conservative_numbers_preserve_identifiers_and_ambiguous_amounts(self):
+        for value in ("00123", "1,23", "1234567890123456", "03/04/2026", "=1+2"):
+            self.assertIsNone(service.conservative_number(value))
+        self.assertEqual(service.conservative_number("$1,234.56"), 1234.56)
+        self.assertEqual(service.conservative_number("-0.25"), -0.25)
+
+    def test_checkpoint_rejects_changed_source_corruption_and_reuses_completed_page(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            service.save_page_checkpoint(root, "source-a", 0, "Amount 42", "<p>Amount 42</p>")
+            checkpoint = root / "page_1.checkpoint.json"
+            self.assertEqual(service.read_checkpoint(checkpoint, "source-a", 0)["md"], "Amount 42")
+            self.assertIsNone(service.read_checkpoint(checkpoint, "source-b", 0))
+            self.assertIsNone(service.read_checkpoint(checkpoint, "source-a", 1))
+            value = json.loads(checkpoint.read_text())
+            value["md"] = "Amount 999"
+            checkpoint.write_text(json.dumps(value))
+            self.assertIsNone(service.read_checkpoint(checkpoint, "source-a", 0))
+
+    def test_disk_pressure_refuses_work_without_removing_documents(self):
+        from unittest.mock import patch
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "keep.txt"
+            source.write_text("source")
+            with patch.object(service.shutil, "disk_usage", return_value=SimpleNamespace(free=1)):
+                with self.assertRaises(service.StoragePressureError):
+                    service.require_storage_space(Path(directory), 100)
+            self.assertEqual(source.read_text(), "source")
+
     def test_service_ui_is_profile_explicit_bounded_and_keyboard_accessible(self):
         source = (ROOT / 'service' / 'firm.html').read_text(encoding='utf-8')
         self.assertIn('Hermes Document Reader', source)
